@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Python backend tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m pytest -q backend/tests
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Typecheck Worker
+        working-directory: worker
+        run: |
+          npm install
+          npm run typecheck
+
+      - name: Build Frontend static export
+        working-directory: frontend
+        env:
+          NEXT_EXPORT: "true"
+          NEXT_PUBLIC_BASE_PATH: "/pitchlab"
+          NEXT_PUBLIC_API_URL: "http://127.0.0.1:8787"
+        run: |
+          npm install
+          npm run build

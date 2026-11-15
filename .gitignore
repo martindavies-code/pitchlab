@@ -1,0 +1,30 @@
+# Python / FastAPI / DuckDB
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+data/*.duckdb
+data/*.duckdb.wal
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+
+# Cloudflare Worker / KV generated dumps
+.wrangler/
+worker/data/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.log
+.DS_Store
+Thumbs.db

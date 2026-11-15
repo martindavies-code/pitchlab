@@ -1,0 +1,9 @@
+name = "pitchlab-api"
+main = "src/index.ts"
+compatibility_date = "2025-11-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "PITCHLAB_KV"
+id = "00000000000000000000000000000000"

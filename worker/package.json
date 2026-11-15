@@ -1,0 +1,19 @@
+{
+  "name": "pitchlab-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PitchLab Studio Cloudflare Worker API",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "kv:upload:local": "node scripts/upload-kv.mjs --local",
+    "kv:upload:remote": "node scripts/upload-kv.mjs --remote"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261113.1",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.162.0"
+  }
+}
