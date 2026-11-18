@@ -117,6 +117,7 @@ def test_all_seven_analytical_modules_and_verification(
     assert res_120["coord_grid"] == "120x80"
     assert len(res_120["table_rows"]) > 0
     assert res_120["summary"]
+    assert res_120["conclusion"] and len(res_120["conclusion"]) > len(res_120["summary"]) or "." in res_120["conclusion"]
 
     ver = run_automated_verification(seeded_conn, module_id, res_120["assumptions"], res_120)
     assert ver["all_passed"] is True, f"Verification failed for {module_id}: {ver['checks']}"
@@ -172,16 +173,21 @@ def test_five_stage_workflow_happy_path_and_assumption_override(seeded_conn: duc
     s5 = approve_stage_4_render(seeded_conn, s1["session_id"])
     assert s5["stage"] == 5
     assert s5["status"] == "completed"
+    prev_conclusion = s5["conclusion"]
+    assert prev_conclusion and "Manchester United" in prev_conclusion
+    assert s5["result"]["conclusion"] == prev_conclusion
 
     # Override assumptions in Stage 5 and re-run cleanly
     s5_rerun = override_assumptions_and_rerun(
         seeded_conn,
         s1["session_id"],
-        {"coord_grid": "105x68", "rolling_window": 5},
+        {"coord_grid": "105x68", "rolling_window": 5, "team_name": "Arsenal"},
     )
     assert s5_rerun["result"]["coord_grid"] == "105x68"
     assert s5_rerun["result"]["charts"]["rolling_window"] == 5
     assert s5_rerun["verification"]["all_passed"] is True
+    assert s5_rerun["conclusion"] and "Arsenal" in s5_rerun["conclusion"]
+    assert s5_rerun["conclusion"] != prev_conclusion
 
 
 def test_stage_2_feasibility_halt_on_missing_tracking_or_360_data(seeded_conn: duckdb.DuckDBPyConnection) -> None:
@@ -271,3 +277,31 @@ def test_fastapi_endpoints_end_to_end(tmp_path, monkeypatch) -> None:
         st2 = client.post(f"/api/workflow/{sid}/stage-1-confirm", json={"clarifications": {}})
         assert st2.status_code == 200
         assert st2.json()["feasibility"]["feasible"] is True
+
+
+def test_question_aware_conclusion_synthesis_and_mw_parsing(seeded_conn: duckdb.DuckDBPyConnection) -> None:
+    """Verify prompt matchweek parsing and question-tailored conclusions across workflows."""
+    s1 = start_workflow_session(
+        seeded_conn,
+        "Did anything change for Arsenal after the intervention from matchweek 5 to 12?",
+    )
+    assert s1["module_id"] == "tactical_intervention_comparison"
+    assert s1["params"]["start_mw"] == 5
+    assert s1["params"]["end_mw"] == 12
+
+    confirm_stage_1_and_check_feasibility(seeded_conn, s1["session_id"])
+    approve_stage_2_build_plan(seeded_conn, s1["session_id"])
+    s4 = approve_stage_3_execute_and_verify(seeded_conn, s1["session_id"])
+    s5 = approve_stage_4_render(seeded_conn, s1["session_id"])
+    assert s5["conclusion"] is not None
+    assert "MW 5–12" in s5["conclusion"]
+    assert "Arsenal" in s5["conclusion"]
+
+    # League table underperformance phrasing should lead with underperformers
+    u1 = start_workflow_session(seeded_conn, "Which teams are underperforming their xPTS in 2024/2025?")
+    confirm_stage_1_and_check_feasibility(seeded_conn, u1["session_id"])
+    approve_stage_2_build_plan(seeded_conn, u1["session_id"])
+    approve_stage_3_execute_and_verify(seeded_conn, u1["session_id"])
+    u5 = approve_stage_4_render(seeded_conn, u1["session_id"])
+    assert u5["conclusion"] is not None
+    assert "shortchanged" in u5["conclusion"] or "shortfall" in u5["conclusion"]

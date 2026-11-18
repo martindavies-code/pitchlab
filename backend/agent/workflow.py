@@ -8,6 +8,7 @@ from typing import Any
 
 import duckdb
 
+from backend.analytics.conclusion import build_analysis_conclusion
 from backend.analytics.modules import DEFAULT_ASSUMPTIONS, execute_module, merge_assumptions
 from backend.analytics.verification import run_automated_verification
 from backend.db.schema import inspect_database_capabilities
@@ -114,6 +115,20 @@ def _extract_entities(prompt: str, capabilities: dict[str, Any]) -> dict[str, An
     min_minutes = int(min_match.group(1)) if min_match else DEFAULT_ASSUMPTIONS["min_minutes"]
     explicit_min_mins = bool(min_match)
 
+    # Detect explicit matchweek range or milestone matchweek
+    start_mw = DEFAULT_ASSUMPTIONS["start_mw"]
+    end_mw = DEFAULT_ASSUMPTIONS["end_mw"]
+    milestone_mw = DEFAULT_ASSUMPTIONS["milestone_match_week"]
+    mw_range_match = re.search(r"\b(?:mw|matchweek)\s*(\d{1,2})\s*(?:to|-|–|and)\s*(?:mw|matchweek)?\s*(\d{1,2})\b", low)
+    if mw_range_match:
+        a, b = int(mw_range_match.group(1)), int(mw_range_match.group(2))
+        start_mw = max(1, min(37, min(a, b)))
+        end_mw = max(start_mw + 1, min(38, max(a, b)))
+    else:
+        mw_single = re.search(r"\b(?:since|from|after)\s+(?:mw|matchweek)\s*(\d{1,2})\b", low)
+        if mw_single:
+            milestone_mw = max(2, min(38, int(mw_single.group(1))))
+
     # Detect season
     seasons = capabilities.get("seasons", ["2024/2025"])
     season_name = "2023/2024" if "2023" in low and "2024/2025" not in low else (seasons[0] if seasons else "2024/2025")
@@ -155,6 +170,9 @@ def _extract_entities(prompt: str, capabilities: dict[str, Any]) -> dict[str, An
                 "min_minutes": min_minutes,
                 "normalisation": normalisation,
                 "coord_grid": coord_grid,
+                "start_mw": start_mw,
+                "end_mw": end_mw,
+                "milestone_match_week": milestone_mw,
                 "skill_composite": composite,
             }
         ),
@@ -234,6 +252,7 @@ def start_workflow_session(conn: duckdb.DuckDBPyConnection, prompt: str) -> dict
         "execution_plan": None,
         "verification": None,
         "result": None,
+        "conclusion": None,
     }
     WORKFLOW_SESSIONS[session_id] = session
     return session
@@ -441,12 +460,15 @@ def approve_stage_3_execute_and_verify(
 
     result = execute_module(conn, session["module_id"], session["params"])
     verification = run_automated_verification(conn, session["module_id"], session["params"], result)
+    conclusion = build_analysis_conclusion(result, prompt=session["prompt"], verification=verification)
+    result["conclusion"] = conclusion
 
     session["stage"] = 4
     session["stage_name"] = "automated_verification"
     session["status"] = "awaiting_approval" if verification["all_passed"] else "verification_warning"
     session["verification"] = verification
     session["result"] = result
+    session["conclusion"] = conclusion
     return session
 
 
@@ -482,10 +504,13 @@ def override_assumptions_and_rerun(
     session["execution_plan"] = _build_transparent_plan(session)
     result = execute_module(conn, session["module_id"], session["params"])
     verification = run_automated_verification(conn, session["module_id"], session["params"], result)
+    conclusion = build_analysis_conclusion(result, prompt=session["prompt"], verification=verification)
+    result["conclusion"] = conclusion
 
     session["stage"] = 5
     session["stage_name"] = "interactive_render"
     session["status"] = "completed"
     session["verification"] = verification
     session["result"] = result
+    session["conclusion"] = conclusion
     return session

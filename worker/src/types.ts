@@ -186,6 +186,7 @@ export interface ModuleResultPayload {
   title: string;
   coord_grid: CoordGrid;
   summary: string;
+  conclusion?: string;
   charts: Record<string, unknown>;
   pitch: {
     title: string;
@@ -234,4 +235,5 @@ export interface WorkflowSession {
   } | null;
   verification: VerificationReport | null;
   result: ModuleResultPayload | null;
+  conclusion: string | null;
 }

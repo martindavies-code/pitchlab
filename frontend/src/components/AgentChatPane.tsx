@@ -322,12 +322,17 @@ export function AgentChatPane({
 
       {/* Stage 5 Completed Card */}
       {session && session.stage === 5 && session.result && (
-        <div className="sub-card" style={{ borderColor: "#10b981", display: "flex", flexDirection: "column", gap: "0.45rem" }}>
+        <div className="sub-card" style={{ borderColor: "#10b981", display: "flex", flexDirection: "column", gap: "0.55rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <strong style={{ fontSize: "0.85rem", color: "#34d399" }}>Stage 5: Validated Render Active</strong>
+            <strong style={{ fontSize: "0.85rem", color: "#34d399" }}>Stage 5: Conclusion & Validated Render</strong>
             <span className="badge badge-ok">Verified</span>
           </div>
-          <p style={{ margin: 0, fontSize: "0.78rem" }}>{session.result.summary}</p>
+          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontStyle: "italic" }}>
+            Question: &ldquo;{session.prompt}&rdquo;
+          </div>
+          <p style={{ margin: 0, fontSize: "0.82rem", lineHeight: 1.55, color: "var(--text-primary)" }}>
+            {session.conclusion || session.result.conclusion || session.result.summary}
+          </p>
           <button type="button" className="btn" onClick={onOpenAssumptions}>
             Edit Assumptions & Logic Drawer
           </button>

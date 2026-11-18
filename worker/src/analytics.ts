@@ -1,3 +1,4 @@
+import { buildAnalysisConclusion } from "./conclusion";
 import { compensatedSum, roundHalfAway, roundHalfToEven } from "./data";
 import type {
   AssumptionsConfig,
@@ -1482,24 +1483,34 @@ export function executeModule(
   moduleId: ModuleId,
   overrides?: Record<string, unknown> | null
 ): ModuleResultPayload {
+  let result: ModuleResultPayload;
   switch (moduleId) {
     case "managerial_impact_tracker":
-      return runManagerialImpactTracker(store, overrides);
+      result = runManagerialImpactTracker(store, overrides);
+      break;
     case "tactical_intervention_comparison":
-      return runTacticalInterventionComparison(store, overrides);
+      result = runTacticalInterventionComparison(store, overrides);
+      break;
     case "opposition_scouting_one_pager":
-      return runOppositionScoutingOnePager(store, overrides);
+      result = runOppositionScoutingOnePager(store, overrides);
+      break;
     case "multi_season_player_progression":
-      return runMultiSeasonPlayerProgression(store, overrides);
+      result = runMultiSeasonPlayerProgression(store, overrides);
+      break;
     case "tactical_fit_recruitment_matcher":
-      return runTacticalFitRecruitmentMatcher(store, overrides);
+      result = runTacticalFitRecruitmentMatcher(store, overrides);
+      break;
     case "league_table_vs_underlying_play":
-      return runLeagueTableVsUnderlyingPlay(store, overrides);
+      result = runLeagueTableVsUnderlyingPlay(store, overrides);
+      break;
     case "shot_location_zone_efficiency":
-      return runShotLocationZoneEfficiency(store, overrides);
+      result = runShotLocationZoneEfficiency(store, overrides);
+      break;
     default:
       throw new Error(`Unknown analytical module '${String(moduleId)}'.`);
   }
+  result.conclusion = buildAnalysisConclusion(result);
+  return result;
 }
 
 export function runAutomatedVerification(

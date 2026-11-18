@@ -1,4 +1,5 @@
 import { DEFAULT_ASSUMPTIONS, executeModule, mergeAssumptions, runAutomatedVerification } from "./analytics";
+import { buildAnalysisConclusion } from "./conclusion";
 import { inspectDatabaseCapabilities } from "./data";
 import type { AssumptionsConfig, DatasetStore, Env, ModuleId, WorkflowSession } from "./types";
 
@@ -127,6 +128,22 @@ function extractEntities(prompt: string, capabilities: ReturnType<typeof inspect
   const minMinutes = minMatch ? parseInt(minMatch[1], 10) : DEFAULT_ASSUMPTIONS.min_minutes;
   const explicitMinMins = Boolean(minMatch);
 
+  let startMw = DEFAULT_ASSUMPTIONS.start_mw;
+  let endMw = DEFAULT_ASSUMPTIONS.end_mw;
+  let milestoneMw = DEFAULT_ASSUMPTIONS.milestone_match_week;
+  const mwRangeMatch = low.match(/\b(?:mw|matchweek)\s*(\d{1,2})\s*(?:to|-|–|and)\s*(?:mw|matchweek)?\s*(\d{1,2})\b/);
+  if (mwRangeMatch) {
+    const a = parseInt(mwRangeMatch[1], 10);
+    const b = parseInt(mwRangeMatch[2], 10);
+    startMw = Math.max(1, Math.min(37, Math.min(a, b)));
+    endMw = Math.max(startMw + 1, Math.min(38, Math.max(a, b)));
+  } else {
+    const mwSingle = low.match(/\b(?:since|from|after)\s+(?:mw|matchweek)\s*(\d{1,2})\b/);
+    if (mwSingle) {
+      milestoneMw = Math.max(2, Math.min(38, parseInt(mwSingle[1], 10)));
+    }
+  }
+
   const seasons = capabilities.seasons.length ? capabilities.seasons : ["2024/2025"];
   let seasonName =
     low.includes("2023") && !low.includes("2024/2025")
@@ -174,6 +191,9 @@ function extractEntities(prompt: string, capabilities: ReturnType<typeof inspect
       min_minutes: minMinutes,
       normalisation,
       coord_grid: coordGrid,
+      start_mw: startMw,
+      end_mw: endMw,
+      milestone_match_week: milestoneMw,
       skill_composite: composite,
     }),
     explicit_min_mins: explicitMinMins,
@@ -369,6 +389,7 @@ export async function startWorkflowSession(
     execution_plan: null,
     verification: null,
     result: null,
+    conclusion: null,
   };
 
   await saveSession(env, session);
@@ -464,12 +485,15 @@ export async function approveStage3ExecuteAndVerify(
     session.params as unknown as Record<string, unknown>,
     result
   );
+  const conclusion = buildAnalysisConclusion(result, session.prompt, verification);
+  result.conclusion = conclusion;
 
   session.stage = 4;
   session.stage_name = "automated_verification";
   session.status = verification.all_passed ? "awaiting_approval" : "verification_warning";
   session.verification = verification;
   session.result = result;
+  session.conclusion = conclusion;
   await saveSession(env, session);
   return session;
 }
@@ -506,12 +530,15 @@ export async function overrideAssumptionsAndRerun(
     session.params as unknown as Record<string, unknown>,
     result
   );
+  const conclusion = buildAnalysisConclusion(result, session.prompt, verification);
+  result.conclusion = conclusion;
 
   session.stage = 5;
   session.stage_name = "interactive_render";
   session.status = "completed";
   session.verification = verification;
   session.result = result;
+  session.conclusion = conclusion;
   await saveSession(env, session);
   return session;
 }

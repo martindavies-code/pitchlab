@@ -73,6 +73,7 @@ export interface ModuleResultPayload {
   title: string;
   coord_grid: CoordGrid;
   summary: string;
+  conclusion?: string;
   charts: Record<string, any>;
   pitch: PitchPayload;
   table_columns: string[];
@@ -139,6 +140,7 @@ export interface WorkflowSession {
   } | null;
   verification: VerificationReport | null;
   result: ModuleResultPayload | null;
+  conclusion?: string | null;
 }
 
 export interface DatabaseCapabilities {

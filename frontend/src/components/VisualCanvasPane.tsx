@@ -13,6 +13,7 @@ interface VisualCanvasPaneProps {
   verification: VerificationReport | null;
   coordGrid: CoordGrid;
   isBusy: boolean;
+  questionPrompt?: string;
   onOpenAssumptions: () => void;
 }
 
@@ -33,6 +34,7 @@ export function VisualCanvasPane({
   verification,
   coordGrid,
   isBusy,
+  questionPrompt,
   onOpenAssumptions,
 }: VisualCanvasPaneProps) {
   const pitchSvgRef = useRef<SVGSVGElement | null>(null);
@@ -145,6 +147,21 @@ export function VisualCanvasPane({
               </button>
             </div>
           </div>
+
+          {/* Conclusion Answering the Question */}
+          {(result.conclusion || result.summary) && (
+            <div className="conclusion-card" role="region" aria-label="Analytical Conclusion">
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                <span className="badge badge-ok">Conclusion</span>
+                {questionPrompt && (
+                  <span style={{ fontSize: "0.78rem", color: "var(--text-muted)", fontStyle: "italic" }}>
+                    Answering: &ldquo;{questionPrompt}&rdquo;
+                  </span>
+                )}
+              </div>
+              <p>{result.conclusion || result.summary}</p>
+            </div>
+          )}
 
           {/* Interactive Analytical Charts */}
           <ModuleCharts result={result} />

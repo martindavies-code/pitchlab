@@ -87,7 +87,7 @@ export default function PitchLabStudioPage() {
 
   const handleToggleGrid = async (grid: CoordGrid) => {
     setCoordGrid(grid);
-    if (session && session.stage === 5) {
+    if (session && session.stage === 5 && session.module_id === activeModule) {
       setIsBusy(true);
       try {
         const updated = await pitchlabApi.overrideAssumptions(session.session_id, { coord_grid: grid });
@@ -185,7 +185,7 @@ export default function PitchLabStudioPage() {
     setErrorBanner(null);
     try {
       if (updated.coord_grid) setCoordGrid(updated.coord_grid);
-      if (session && session.stage === 5) {
+      if (session && session.stage === 5 && session.module_id === activeModule) {
         const rerun = await pitchlabApi.overrideAssumptions(session.session_id, updated);
         setSession(rerun);
         if (rerun.result) {
@@ -280,6 +280,7 @@ export default function PitchLabStudioPage() {
           verification={verification}
           coordGrid={coordGrid}
           isBusy={isBusy}
+          questionPrompt={session && session.stage === 5 && session.module_id === activeModule ? session.prompt : undefined}
           onOpenAssumptions={() => setAssumptionsOpen(true)}
         />
       </main>

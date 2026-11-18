@@ -6,6 +6,8 @@ import math
 from typing import Any
 import duckdb
 
+from backend.analytics.conclusion import build_analysis_conclusion
+
 
 DEFAULT_ASSUMPTIONS: dict[str, Any] = {
     "season_name": "2024/2025",
@@ -1354,4 +1356,6 @@ def execute_module(
     """Dispatch and execute one of the 7 analytical modules."""
     if module_id not in MODULE_DISPATCH:
         raise ValueError(f"Unknown analytical module '{module_id}'.")
-    return MODULE_DISPATCH[module_id](conn, overrides)
+    result = MODULE_DISPATCH[module_id](conn, overrides)
+    result["conclusion"] = build_analysis_conclusion(result)
+    return result
