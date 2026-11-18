@@ -64,13 +64,13 @@ function fmtFixed(val: number, decimals: number): string {
 
 interface TeamStyleProfile {
   matches_played: number;
-  possession_share: number;
-  ppda: number;
-  build_up_directness: number;
-  high_turnovers_per90: number;
-  progressive_passes_per90: number;
-  box_entries_per90: number;
-  xg_per90: number;
+  possession_share: number | null;
+  ppda: number | null;
+  build_up_directness: number | null;
+  high_turnovers_per90: number | null;
+  progressive_passes_per90: number | null;
+  box_entries_per90: number | null;
+  xg_per90: number | null;
 }
 
 function computeTeamStyleProfile(
@@ -154,13 +154,13 @@ function computeTeamStyleProfile(
   if (matchesWithEvents === 0) {
     return {
       matches_played: 0,
-      possession_share: 50.0,
-      ppda: 12.0,
-      build_up_directness: 35.0,
-      high_turnovers_per90: 4.0,
-      progressive_passes_per90: 30.0,
-      box_entries_per90: 12.0,
-      xg_per90: 1.2,
+      possession_share: null,
+      ppda: null,
+      build_up_directness: null,
+      high_turnovers_per90: null,
+      progressive_passes_per90: null,
+      box_entries_per90: null,
+      xg_per90: null,
     };
   }
 
@@ -294,7 +294,19 @@ export function runManagerialImpactTracker(
   const after = timeline.filter((t) => Number(t.match_week) >= splitMw);
 
   const aggPeriod = (label: string, items: Array<Record<string, unknown>>) => {
-    const n = Math.max(1, items.length);
+    if (items.length === 0) {
+      return {
+        period: label,
+        matches: 0,
+        ppg: null as number | null,
+        gf_per90: null as number | null,
+        ga_per90: null as number | null,
+        xgf_per90: null as number | null,
+        xga_per90: null as number | null,
+        xg_diff_per90: null as number | null,
+      };
+    }
+    const n = items.length;
     const ptsSum = compensatedSum(items.map((x) => Number(x.pts)));
     const gfSum = compensatedSum(items.map((x) => Number(x.gf)));
     const gaSum = compensatedSum(items.map((x) => Number(x.ga)));
@@ -303,19 +315,20 @@ export function runManagerialImpactTracker(
     const xgdSum = compensatedSum(items.map((x) => Number(x.xgf) - Number(x.xga)));
     return {
       period: label,
-      matches: items.length,
-      ppg: roundHalfToEven(ptsSum / n, 2),
-      gf_per90: roundHalfToEven(gfSum / n, 2),
-      ga_per90: roundHalfToEven(gaSum / n, 2),
-      xgf_per90: roundHalfToEven(xgfSum / n, 2),
-      xga_per90: roundHalfToEven(xgaSum / n, 2),
-      xg_diff_per90: roundHalfToEven(xgdSum / n, 2),
+      matches: n,
+      ppg: roundHalfToEven(ptsSum / n, 2) as number | null,
+      gf_per90: roundHalfToEven(gfSum / n, 2) as number | null,
+      ga_per90: roundHalfToEven(gaSum / n, 2) as number | null,
+      xgf_per90: roundHalfToEven(xgfSum / n, 2) as number | null,
+      xga_per90: roundHalfToEven(xgaSum / n, 2) as number | null,
+      xg_diff_per90: roundHalfToEven(xgdSum / n, 2) as number | null,
     };
   };
 
   const beforeStats = aggPeriod(`Before MW ${splitMw}`, before);
   const afterStats = aggPeriod(`From MW ${splitMw} Onwards`, after);
-  const comparisonTable = [beforeStats, afterStats];
+  const comparisonTable =
+    beforeStats.matches === 0 && afterStats.matches === 0 ? [] : [beforeStats, afterStats];
 
   teamShots.sort((a, b) => b.match_week - a.match_week || b.e.xg - a.e.xg);
   const pitchMarkers = teamShots.slice(0, 80).map(({ e, match_week }) => {
@@ -331,27 +344,34 @@ export function runManagerialImpactTracker(
     };
   });
 
-  const ppgDelta = roundHalfToEven(afterStats.ppg - beforeStats.ppg, 2);
-  const xgdDelta = roundHalfToEven(afterStats.xg_diff_per90 - beforeStats.xg_diff_per90, 2);
-  const direction = xgdDelta > 0.05 ? "improving" : xgdDelta < -0.05 ? "declining" : "holding steady";
-
+  let title: string;
   let summary: string;
   if (beforeStats.matches === 0 && afterStats.matches === 0) {
+    title = `Managerial Impact Tracker — ${team} (${season} · No Match Data)`;
     summary = `No match data found for ${team} in ${season}.`;
   } else if (beforeStats.matches === 0 || afterStats.matches === 0) {
+    title = `Managerial Impact Tracker — ${team} (${season} · Incomplete Split at MW ${splitMw})`;
     summary =
       `Insufficient split sample for ${team} in ${season} at MW ${splitMw} ` +
       `(${beforeStats.matches} matches before, ${afterStats.matches} from MW ${splitMw} onward).`;
   } else {
+    const bPpg = beforeStats.ppg as number;
+    const aPpg = afterStats.ppg as number;
+    const bXgd = beforeStats.xg_diff_per90 as number;
+    const aXgd = afterStats.xg_diff_per90 as number;
+    const ppgDelta = roundHalfToEven(aPpg - bPpg, 2);
+    const xgdDelta = roundHalfToEven(aXgd - bXgd, 2);
+    const direction = xgdDelta > 0.05 ? "improving" : xgdDelta < -0.05 ? "declining" : "holding steady";
+    title = `Managerial Impact Tracker — ${team} (${season})`;
     summary =
       `${team} is ${direction} after MW ${splitMw}: rolling xG differential moved by ` +
-      `${fmtSigned(xgdDelta, 2)} per match (${fmtSigned(beforeStats.xg_diff_per90, 2)} → ${fmtSigned(afterStats.xg_diff_per90, 2)}) ` +
-      `and points per game shifted by ${fmtSigned(ppgDelta, 2)} (${fmtFixed(beforeStats.ppg, 2)} → ${fmtFixed(afterStats.ppg, 2)}).`;
+      `${fmtSigned(xgdDelta, 2)} per match (${fmtSigned(bXgd, 2)} → ${fmtSigned(aXgd, 2)}) ` +
+      `and points per game shifted by ${fmtSigned(ppgDelta, 2)} (${fmtFixed(bPpg, 2)} → ${fmtFixed(aPpg, 2)}).`;
   }
 
   return {
     module_id: "managerial_impact_tracker",
-    title: `Managerial Impact Tracker — ${team} (${season})`,
+    title,
     coord_grid: grid,
     summary,
     charts: {
@@ -386,7 +406,9 @@ export function runTacticalInterventionComparison(
   const runProfile = computeTeamStyleProfile(store, team, season, cfg, startMw, endMw);
 
   const allTeams = Array.from(new Set(store.teams.map((t) => t.team_name))).sort();
-  const leagueProfiles = allTeams.map((t) => computeTeamStyleProfile(store, t, season, cfg));
+  const leagueProfiles = allTeams
+    .map((t) => computeTeamStyleProfile(store, t, season, cfg))
+    .filter((lp) => lp.matches_played > 0);
 
   const percentile = (val: number, series: number[], lowerIsBetter = false): number => {
     if (series.length === 0) return 50;
@@ -403,33 +425,42 @@ export function runTacticalInterventionComparison(
     ["box_entries_per90", "Penalty Box Entries / 90", false],
   ];
 
+  const seasonOk = seasonProfile.matches_played > 0;
+  const runOk = runProfile.matches_played > 0;
   const radarData: Array<Record<string, unknown>> = [];
   const tableRows: Array<Record<string, unknown>> = [];
 
-  for (const [key, label, invert] of metricsSpec) {
-    const series = leagueProfiles.map((lp) => lp[key]);
-    const sVal = seasonProfile[key];
-    const rVal = runProfile[key];
-    const sPct = percentile(sVal, series, invert);
-    const rPct = percentile(rVal, series, invert);
-    const delta = roundHalfToEven(rVal - sVal, 2);
-    radarData.push({
-      metric: label,
-      key,
-      season_avg: sVal,
-      intervention_run: rVal,
-      season_percentile: sPct,
-      run_percentile: rPct,
-      delta,
-    });
-    tableRows.push({
-      metric: label,
-      season_avg: sVal,
-      intervention_run: rVal,
-      delta,
-      season_pct: sPct,
-      run_pct: rPct,
-    });
+  if (seasonOk) {
+    for (const [key, label, invert] of metricsSpec) {
+      const series = leagueProfiles.map((lp) => lp[key]).filter((v): v is number => v !== null);
+      const sVal = seasonProfile[key] as number;
+      const sPct = percentile(sVal, series, invert);
+      let rVal: number | null = null;
+      let rPct: number | null = null;
+      let delta: number | null = null;
+      if (runOk) {
+        rVal = runProfile[key] as number;
+        rPct = percentile(rVal, series, invert);
+        delta = roundHalfToEven(rVal - sVal, 2);
+      }
+      radarData.push({
+        metric: label,
+        key,
+        season_avg: sVal,
+        intervention_run: rVal,
+        season_percentile: sPct,
+        run_percentile: rPct,
+        delta,
+      });
+      tableRows.push({
+        metric: label,
+        season_avg: sVal,
+        intervention_run: rVal,
+        delta,
+        season_pct: sPct,
+        run_pct: rPct,
+      });
+    }
   }
 
   const matchedEvs: Array<{ e: EventRow; match_week: number }> = [];
@@ -469,17 +500,33 @@ export function runTacticalInterventionComparison(
     }
   }
 
-  const interventionSummary =
-    runProfile.matches_played === 0 || seasonProfile.matches_played === 0
-      ? `Insufficient match data for ${team} during MW ${startMw}–${endMw} in ${season} ` +
-        `(${runProfile.matches_played} matches in window, ${seasonProfile.matches_played} in season).`
-      : `During MW ${startMw}–${endMw} (${runProfile.matches_played} matches), ${team} recorded PPDA of ` +
-        `${fmtFixed(runProfile.ppda, 2)} (season avg ${fmtFixed(seasonProfile.ppda, 2)}), ${fmtFixed(runProfile.possession_share, 1)}% possession ` +
-        `(season ${fmtFixed(seasonProfile.possession_share, 1)}%), and ${fmtFixed(runProfile.progressive_passes_per90, 1)} progressive passes/90.`;
+  let interventionTitle: string;
+  let interventionSummary: string;
+  let interventionPitchTitle: string;
+  if (!seasonOk) {
+    interventionTitle = `Tactical Intervention Comparison — ${team} (${season} · No Match Data)`;
+    interventionSummary =
+      `Insufficient match data for ${team} during MW ${startMw}–${endMw} in ${season} ` +
+      "(0 matches in window, 0 in season).";
+    interventionPitchTitle = `No Intervention Pitch Telemetry Available (${team} · ${season})`;
+  } else if (!runOk) {
+    interventionTitle = `Tactical Intervention Comparison — ${team} (MW ${startMw}–${endMw} Unavailable · ${season} Baseline Only)`;
+    interventionSummary =
+      `Insufficient match data for ${team} during MW ${startMw}–${endMw} in ${season} ` +
+      `(0 matches in window, ${seasonProfile.matches_played} in season; showing ${season} baseline only).`;
+    interventionPitchTitle = `No Window Events Recorded (${team} · MW ${startMw}–${endMw} Has 0 Matches)`;
+  } else {
+    interventionTitle = `Tactical Intervention Comparison — ${team} (MW ${startMw}–${endMw} vs Season Avg)`;
+    interventionSummary =
+      `During MW ${startMw}–${endMw} (${runProfile.matches_played} matches), ${team} recorded PPDA of ` +
+      `${fmtFixed(runProfile.ppda as number, 2)} (season avg ${fmtFixed(seasonProfile.ppda as number, 2)}), ${fmtFixed(runProfile.possession_share as number, 1)}% possession ` +
+      `(season ${fmtFixed(seasonProfile.possession_share as number, 1)}%), and ${fmtFixed(runProfile.progressive_passes_per90 as number, 1)} progressive passes/90.`;
+    interventionPitchTitle = `${team} Progressive Passes (Blue Arrows) & High Turnovers (Red Dots) in MW ${startMw}–${endMw}`;
+  }
 
   return {
     module_id: "tactical_intervention_comparison",
-    title: `Tactical Intervention Comparison — ${team} (MW ${startMw}–${endMw} vs Season Avg)`,
+    title: interventionTitle,
     coord_grid: grid,
     summary: interventionSummary,
     charts: {
@@ -489,10 +536,12 @@ export function runTacticalInterventionComparison(
         end_mw: endMw,
         matches: runProfile.matches_played,
         season_matches: seasonProfile.matches_played,
+        intervention_available: runOk,
+        season_available: seasonOk,
       },
     },
     pitch: {
-      title: `${team} Progressive Passes (Blue Arrows) & High Turnovers (Red Dots) in MW ${startMw}–${endMw}`,
+      title: interventionPitchTitle,
       arrows: arrows.slice(0, 35),
       markers: markers.slice(0, 35),
       zones: [],
@@ -684,16 +733,20 @@ export function runOppositionScoutingOnePager(
     .map(([formation, matches]) => ({ formation, matches }))
     .sort((a, b) => b.matches - a.matches);
 
+  const oppTitle =
+    oppStyle.matches_played === 0
+      ? `Opposition Scouting One-Pager — ${opp} (${season} · No Match Data)`
+      : `Opposition Scouting One-Pager — ${opp} (${season})`;
   const oppSummary =
     oppStyle.matches_played === 0
       ? `No match data found for ${opp} in ${season}.`
-      : `Pre-Match Briefing on ${opp}: PPDA ${fmtFixed(oppStyle.ppda, 2)}, ${fmtFixed(oppStyle.possession_share, 1)}% possession, ` +
-        `${fmtFixed(oppStyle.build_up_directness, 1)}% long build-up share, primary shape ${formationsUsed.length ? formationsUsed[0].formation : "unknown"}. ` +
+      : `Pre-Match Briefing on ${opp}: PPDA ${fmtFixed(oppStyle.ppda as number, 2)}, ${fmtFixed(oppStyle.possession_share as number, 1)}% possession, ` +
+        `${fmtFixed(oppStyle.build_up_directness as number, 1)}% long build-up share, primary shape ${formationsUsed.length ? formationsUsed[0].formation : "unknown"}. ` +
         `Key threat: ${dangerPlayers.length ? dangerPlayers[0].player_name : "N/A"}.`;
 
   return {
     module_id: "opposition_scouting_one_pager",
-    title: `Opposition Scouting One-Pager — ${opp} (${season})`,
+    title: oppTitle,
     coord_grid: grid,
     summary: oppSummary,
     charts: {
@@ -997,7 +1050,10 @@ export function runMultiSeasonPlayerProgression(
 
   return {
     module_id: "multi_season_player_progression",
-    title: `Multi-Season Player Progression (${compTitle}: ${s1} → ${s2})`,
+    title:
+      topPlayers.length > 0
+        ? `Multi-Season Player Progression (${compTitle}: ${s1} → ${s2})`
+        : `Multi-Season Player Progression (${compTitle}: ${s1} → ${s2} · No Qualifiers)`,
     coord_grid: grid,
     summary: scoutingSummary,
     charts: {
@@ -1038,17 +1094,81 @@ export function runTacticalFitRecruitmentMatcher(
   const season = String(cfg.season_name);
   const grid = String(cfg.coord_grid) as CoordGrid;
 
-  const qLower = playerName.toLowerCase();
-  const matchedRow = store.players.find((p) => p.player_name.toLowerCase().includes(qLower));
+  const qLower = playerName.trim().toLowerCase();
+  const matchedRow = qLower ? store.players.find((p) => p.player_name.toLowerCase().includes(qLower)) : undefined;
   const playerMatched = matchedRow !== undefined;
-  const pRow = matchedRow ?? store.players[0];
 
-  const resolvedPlayer = pRow ? String(pRow.player_name) : playerName;
-  const currentClub = pRow ? String(pRow.team_name) : String(cfg.team_name);
-  const playerPos = pRow ? String(pRow.primary_position) : "";
+  if (!playerMatched) {
+    const targetStyle = computeTeamStyleProfile(store, targetClub, season, cfg);
+    return {
+      module_id: "tactical_fit_recruitment_matcher",
+      title: `Tactical Fit Matcher — ${playerName} → ${targetClub} (Player Not Found)`,
+      coord_grid: grid,
+      summary:
+        `Player '${playerName}' was not found in the squad catalog for ${season}; ` +
+        "no tactical fit score or style comparison was computed.",
+      charts: {
+        fit_score: null,
+        player_name: playerName,
+        requested_player: playerName,
+        player_matched: false,
+        current_club: null,
+        target_club: targetClub,
+        current_club_matches: 0,
+        target_club_matches: targetStyle.matches_played,
+        radar: [],
+        adaptation_risks: [],
+      },
+      pitch: {
+        title: `No On-Ball Footprint Available (${playerName} Not Found in ${season})`,
+        markers: [],
+        arrows: [],
+        zones: [],
+      },
+      table_columns: ["dimension", "player_team_val", "target_club_val", "delta", "overlap_pct", "status"],
+      table_rows: [],
+      assumptions: cfg,
+    };
+  }
+
+  const resolvedPlayer = String(matchedRow.player_name);
+  const currentClub = String(matchedRow.team_name);
+  const playerPos = String(matchedRow.primary_position);
 
   const currentStyle = computeTeamStyleProfile(store, currentClub, season, cfg);
   const targetStyle = computeTeamStyleProfile(store, targetClub, season, cfg);
+
+  if (currentStyle.matches_played === 0 || targetStyle.matches_played === 0) {
+    return {
+      module_id: "tactical_fit_recruitment_matcher",
+      title: `Tactical Fit Matcher — ${resolvedPlayer} (${currentClub}) → ${targetClub} (Insufficient Match Sample)`,
+      coord_grid: grid,
+      summary:
+        `Insufficient match data in ${season} to compare ${resolvedPlayer} ` +
+        `(${currentClub}, ${currentStyle.matches_played} matches) with ${targetClub} (${targetStyle.matches_played} matches).`,
+      charts: {
+        fit_score: null,
+        player_name: resolvedPlayer,
+        requested_player: playerName,
+        player_matched: true,
+        current_club: currentClub,
+        target_club: targetClub,
+        current_club_matches: currentStyle.matches_played,
+        target_club_matches: targetStyle.matches_played,
+        radar: [],
+        adaptation_risks: [],
+      },
+      pitch: {
+        title: `${resolvedPlayer} On-Ball Footprint Unavailable (${season})`,
+        markers: [],
+        arrows: [],
+        zones: [],
+      },
+      table_columns: ["dimension", "player_team_val", "target_club_val", "delta", "overlap_pct", "status"],
+      table_rows: [],
+      assumptions: cfg,
+    };
+  }
 
   const dims: Array<[keyof TeamStyleProfile, string, number]> = [
     ["ppda", "Pressing Intensity (PPDA)", 20.0],
@@ -1065,8 +1185,8 @@ export function runTacticalFitRecruitmentMatcher(
   const risks: string[] = [];
 
   for (const [key, label, scale] of dims) {
-    const cVal = currentStyle[key];
-    const tVal = targetStyle[key];
+    const cVal = currentStyle[key] as number;
+    const tVal = targetStyle[key] as number;
     const gap = roundHalfToEven(tVal - cVal, 2);
     const normDiff = Math.min(1.0, Math.abs(gap) / scale);
     const overlapPct = Math.trunc(roundHalfToEven((1.0 - normDiff) * 100, 0));
@@ -1130,18 +1250,9 @@ export function runTacticalFitRecruitmentMatcher(
     }
   }
 
-  let fitSummary: string;
-  if (!playerMatched) {
-    fitSummary = `Player '${playerName}' was not found in the squad catalog for ${season}.`;
-  } else if (currentStyle.matches_played === 0 || targetStyle.matches_played === 0) {
-    fitSummary =
-      `Insufficient match data in ${season} to compare ${resolvedPlayer} ` +
-      `(${currentClub}, ${currentStyle.matches_played} matches) with ${targetClub} (${targetStyle.matches_played} matches).`;
-  } else {
-    fitSummary =
-      `${resolvedPlayer} (${playerPos}, ${currentClub}) achieves a ${fitScore}% Tactical Fit Score for ${targetClub}. ` +
-      risks[0];
-  }
+  const fitSummary =
+    `${resolvedPlayer} (${playerPos}, ${currentClub}) achieves a ${fitScore}% Tactical Fit Score for ${targetClub}. ` +
+    risks[0];
 
   return {
     module_id: "tactical_fit_recruitment_matcher",
@@ -1309,7 +1420,10 @@ export function runLeagueTableVsUnderlyingPlay(
 
   return {
     module_id: "league_table_vs_underlying_play",
-    title: `League Table vs Underlying Play (Simulated xPTS — ${season})`,
+    title:
+      tableRows.length > 0
+        ? `League Table vs Underlying Play (Simulated xPTS — ${season})`
+        : `League Table vs Underlying Play (${season} · No Match Data)`,
     coord_grid: grid,
     summary:
       overperf && underperf
@@ -1502,16 +1616,47 @@ export function runShotLocationZoneEfficiency(
     }
   }
 
+  if (teamTotalShots === 0 || !bestZone) {
+    return {
+      module_id: "shot_location_zone_efficiency",
+      title: `Shot Location & Zone Efficiency — ${team} (${season} · No Shot Data)`,
+      coord_grid: grid,
+      summary: `No shot data found for ${team} in ${season}.`,
+      charts: {
+        zone_comparison: [],
+        total_shots: 0,
+      },
+      pitch: {
+        title: `No Shot Locations Recorded for ${team} (${season})`,
+        zones: [],
+        markers: [],
+        arrows: [],
+      },
+      table_columns: [
+        "zone",
+        "team_shots",
+        "shot_share_pct",
+        "league_share_pct",
+        "goals",
+        "total_xg",
+        "xg_per_shot",
+        "league_xg_per_shot",
+        "conversion_pct",
+        "league_conversion_pct",
+      ],
+      table_rows: [],
+      assumptions: cfg,
+    };
+  }
+
   return {
     module_id: "shot_location_zone_efficiency",
     title: `Shot Location & Zone Efficiency — ${team} vs League (${season})`,
     coord_grid: grid,
     summary:
-      teamTotalShots === 0 || !bestZone
-        ? `No shot data found for ${team} in ${season}.`
-        : `${team} took ${teamTotalShots} shots in ${season}. Highest goal output came from ` +
-          `${bestZone.zone} (${bestZone.goals} goals from ${bestZone.team_shots} shots, ` +
-          `${fmtFixed(Number(bestZone.conversion_pct), 1)}% conversion vs ${fmtFixed(Number(bestZone.league_conversion_pct), 1)}% league avg).`,
+      `${team} took ${teamTotalShots} shots in ${season}. Highest goal output came from ` +
+      `${bestZone.zone} (${bestZone.goals} goals from ${bestZone.team_shots} shots, ` +
+      `${fmtFixed(Number(bestZone.conversion_pct), 1)}% conversion vs ${fmtFixed(Number(bestZone.league_conversion_pct), 1)}% league avg).`,
     charts: {
       zone_comparison: tableRows,
       total_shots: teamTotalShots,

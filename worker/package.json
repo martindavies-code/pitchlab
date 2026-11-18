@@ -2,6 +2,10 @@
   "name": "pitchlab-worker",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "description": "PitchLab Studio Cloudflare Worker API",
   "scripts": {
     "dev": "wrangler dev --port 8787",

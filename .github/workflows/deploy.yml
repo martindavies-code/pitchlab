@@ -37,11 +37,12 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Typecheck Cloudflare Worker
+      - name: Typecheck and test Cloudflare Worker
         working-directory: worker
         run: |
           npm install
           npm run typecheck
+          npm test
 
   deploy-worker:
     needs: test

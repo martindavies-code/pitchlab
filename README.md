@@ -18,3 +18,14 @@ npm start
 ```
 
 Open `http://127.0.0.1:3000` in your browser.
+
+## Worker API Tests
+
+Require Node.js `>=22.6.0` (and Python with `duckdb` on `PATH` or `.venv` if `worker/data/kv-bulk.json` is not present — the test suite generates an isolated in-memory fixture automatically via `worker/scripts/export-kv-data.py --in-memory`):
+
+```bash
+cd worker
+npm install
+npm run typecheck
+npm test
+```

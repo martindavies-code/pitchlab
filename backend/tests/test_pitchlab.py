@@ -485,26 +485,59 @@ def test_opposition_scouting_match_state_direction(seeded_conn: duckdb.DuckDBPyC
 
 def test_missing_samples_and_legitimate_zero_observations(seeded_conn: duckdb.DuckDBPyConnection) -> None:
     """Missing/empty samples must explicitly report insufficient data and fail verification; real 0s remain distinct."""
-    # A. tactical_intervention_comparison with empty MW window (30-38)
+    import json
+
+    # A. tactical_intervention_comparison with empty MW window (30-38) + valid season baseline
     res_a = execute_module(seeded_conn, "tactical_intervention_comparison", {"team_name": "Arsenal", "season_name": "2024/2025", "start_mw": 30, "end_mw": 38})
     ver_a = run_automated_verification(seeded_conn, "tactical_intervention_comparison", res_a["assumptions"], res_a)
     concl_a = build_analysis_conclusion(res_a, verification=ver_a)
     assert res_a["charts"]["match_window"]["matches"] == 0
+    assert res_a["charts"]["match_window"]["season_matches"] == 18
+    assert res_a["charts"]["match_window"]["intervention_available"] is False
+    assert res_a["charts"]["match_window"]["season_available"] is True
+    assert "Baseline Only" in res_a["title"] and "Unavailable" in res_a["title"]
+    assert len(res_a["charts"]["radar"]) == 6 and len(res_a["table_rows"]) == 6
+    for item in res_a["charts"]["radar"]:
+        assert isinstance(item["season_avg"], (int, float))
+        assert isinstance(item["season_percentile"], (int, float))
+        assert item["intervention_run"] is None
+        assert item["run_percentile"] is None
+        assert item["delta"] is None
+    for row in res_a["table_rows"]:
+        assert isinstance(row["season_avg"], (int, float))
+        assert isinstance(row["season_pct"], (int, float))
+        assert row["intervention_run"] is None
+        assert row["run_pct"] is None
+        assert row["delta"] is None
     assert ver_a["all_passed"] is False
     assert "Insufficient match sample" in concl_a and "0 matches" in concl_a
     for fabricated in ("clear tactical", "12.00 PPDA", "50.0% → 50.0%", "35.0% → 35.0%", "30.0 progressive"):
         assert fabricated not in concl_a
     assert "Verification warning" in concl_a
 
+    # A2. tactical_intervention_comparison with unknown season 2030/2031
+    res_a_empty = execute_module(seeded_conn, "tactical_intervention_comparison", {"team_name": "Arsenal", "season_name": "2030/2031", "start_mw": 1, "end_mw": 5})
+    ver_a_empty = run_automated_verification(seeded_conn, "tactical_intervention_comparison", res_a_empty["assumptions"], res_a_empty)
+    assert res_a_empty["charts"]["match_window"]["matches"] == 0
+    assert res_a_empty["charts"]["match_window"]["season_matches"] == 0
+    assert res_a_empty["charts"]["match_window"]["season_available"] is False
+    assert res_a_empty["charts"]["match_window"]["intervention_available"] is False
+    assert res_a_empty["charts"]["radar"] == []
+    assert res_a_empty["table_rows"] == []
+    assert ver_a_empty["all_passed"] is False
+
     # B. managerial_impact_tracker with unknown season 2030/2031
     res_b = execute_module(seeded_conn, "managerial_impact_tracker", {"team_name": "Arsenal", "season_name": "2030/2031"})
     ver_b = run_automated_verification(seeded_conn, "managerial_impact_tracker", res_b["assumptions"], res_b)
     concl_b = build_analysis_conclusion(res_b, verification=ver_b)
     assert ver_b["all_passed"] is False
+    assert res_b["table_rows"] == []
+    assert res_b["charts"]["timeline"] == []
+    assert "No Match Data" in res_b["title"]
     assert "Insufficient match data" in concl_b and "0 matches" in concl_b
     assert "held steady" not in concl_b
 
-    # B2. One empty managerial period (isolated DuckDB fixture where before_matches == 0, after_matches == 1)
+    # B2. One empty managerial period (isolated DuckDB fixture where before_matches == 0, after_matches > 0)
     one_side_conn = duckdb.connect(":memory:")
     ingest_default_statsbomb_dataset(one_side_conn, reset=True, seed=7)
     one_side_conn.execute("DELETE FROM events WHERE match_id IN (SELECT match_id FROM matches WHERE season_name = '2024/2025' AND match_week < 15)")
@@ -513,15 +546,28 @@ def test_missing_samples_and_legitimate_zero_observations(seeded_conn: duckdb.Du
     res_b_one = execute_module(one_side_conn, "managerial_impact_tracker", {"team_name": "Arsenal", "season_name": "2024/2025", "milestone_match_week": 15})
     ver_b_one = run_automated_verification(one_side_conn, "managerial_impact_tracker", res_b_one["assumptions"], res_b_one)
     one_side_conn.close()
-    assert res_b_one["table_rows"][0]["matches"] == 0 and res_b_one["table_rows"][1]["matches"] > 0
+    assert res_b_one["table_rows"][0]["matches"] == 0
+    assert res_b_one["table_rows"][0]["ppg"] is None
+    assert res_b_one["table_rows"][0]["xg_diff_per90"] is None
+    assert res_b_one["table_rows"][1]["matches"] > 0
+    assert isinstance(res_b_one["table_rows"][1]["ppg"], (int, float))
+    assert isinstance(res_b_one["table_rows"][1]["xg_diff_per90"], (int, float))
+    assert "Incomplete Split" in res_b_one["title"]
     assert ver_b_one["all_passed"] is False
     assert "Insufficient pre-split sample" in res_b_one["conclusion"] and "0 matches were recorded before MW 15" in res_b_one["conclusion"]
 
-    # C. opposition_scouting_one_pager with Unknown Club
+    # C. opposition_scouting_one_pager with Unknown Club + _compute_team_style_profile 0-match guard
+    style_missing = _compute_team_style_profile(seeded_conn, "Unknown Club", "2024/2025", {"ppda_def_line_x": 42.0, "high_turnover_x_threshold": 65.0, "prog_pass_min_dist": 10.0})
+    assert style_missing["matches_played"] == 0 and style_missing["ppda"] is None and style_missing["possession_share"] is None
     res_c = execute_module(seeded_conn, "opposition_scouting_one_pager", {"opponent_name": "Unknown Club", "season_name": "2024/2025"})
     ver_c = run_automated_verification(seeded_conn, "opposition_scouting_one_pager", res_c["assumptions"], res_c)
     concl_c = build_analysis_conclusion(res_c, verification=ver_c)
     assert res_c["charts"]["style_kpis"]["matches_played"] == 0
+    assert res_c["charts"]["style_kpis"]["ppda"] is None
+    assert res_c["charts"]["style_kpis"]["possession_share"] is None
+    assert res_c["table_rows"] == []
+    assert res_c["pitch"]["zones"] == []
+    assert "No Match Data" in res_c["title"]
     assert ver_c["all_passed"] is False
     assert "Insufficient data to scout Unknown Club" in concl_c and "0 matches" in concl_c
     for fabricated in ("4-3-3", "balanced", "selective mid-press", "span evenly"):
@@ -531,29 +577,61 @@ def test_missing_samples_and_legitimate_zero_observations(seeded_conn: duckdb.Du
     res_d = execute_module(seeded_conn, "multi_season_player_progression", {"min_minutes": 99999})
     ver_d = run_automated_verification(seeded_conn, "multi_season_player_progression", res_d["assumptions"], res_d)
     assert ver_d["all_passed"] is False
+    assert res_d["table_rows"] == []
+    assert res_d["charts"]["leaderboard"] == []
+    assert "No Qualifiers" in res_d["title"]
     assert "Insufficient qualifying player sample" in res_d["conclusion"] and "0 players" in res_d["conclusion"]
 
-    # E. tactical_fit_recruitment_matcher with unknown player and unknown season
+    # E. tactical_fit_recruitment_matcher with unknown player, unknown season, and valid same-club
     res_e1 = execute_module(seeded_conn, "tactical_fit_recruitment_matcher", {"player_name": "Nonexistent Player", "target_club": "Arsenal"})
     ver_e1 = run_automated_verification(seeded_conn, "tactical_fit_recruitment_matcher", res_e1["assumptions"], res_e1)
     assert ver_e1["all_passed"] is False
+    assert "Nonexistent Player" in res_e1["title"] and "Player Not Found" in res_e1["title"]
+    assert "David Raya" not in json.dumps(res_e1)
+    assert res_e1["charts"]["player_matched"] is False
+    assert res_e1["charts"]["fit_score"] is None
+    assert res_e1["charts"]["current_club"] is None
+    assert res_e1["charts"]["radar"] == []
+    assert res_e1["charts"]["adaptation_risks"] == []
+    assert res_e1["table_rows"] == []
+    assert res_e1["pitch"]["markers"] == []
+    assert "minimal tactical friction" not in res_e1["summary"]
     assert "Insufficient data to evaluate tactical fit for Nonexistent Player" in res_e1["conclusion"]
 
     res_e2 = execute_module(seeded_conn, "tactical_fit_recruitment_matcher", {"player_name": "Cole Palmer", "target_club": "Arsenal", "season_name": "2030/2031"})
     ver_e2 = run_automated_verification(seeded_conn, "tactical_fit_recruitment_matcher", res_e2["assumptions"], res_e2)
     assert ver_e2["all_passed"] is False
+    assert res_e2["charts"]["fit_score"] is None
+    assert res_e2["charts"]["radar"] == []
+    assert res_e2["table_rows"] == []
+    assert res_e2["pitch"]["markers"] == []
     assert "Insufficient match data in 2030/2031" in res_e2["conclusion"]
+
+    res_e_same = execute_module(seeded_conn, "tactical_fit_recruitment_matcher", {"player_name": "Bukayo Saka", "target_club": "Arsenal"})
+    ver_e_same = run_automated_verification(seeded_conn, "tactical_fit_recruitment_matcher", res_e_same["assumptions"], res_e_same)
+    assert ver_e_same["all_passed"] is True
+    assert res_e_same["charts"]["player_matched"] is True
+    assert res_e_same["charts"]["fit_score"] == 99
+    assert len(res_e_same["table_rows"]) == 6
 
     # F. league_table_vs_underlying_play with unknown season
     res_f = execute_module(seeded_conn, "league_table_vs_underlying_play", {"season_name": "2030/2031"})
     ver_f = run_automated_verification(seeded_conn, "league_table_vs_underlying_play", res_f["assumptions"], res_f)
     assert ver_f["all_passed"] is False
+    assert res_f["table_rows"] == []
+    assert res_f["charts"]["scatter"] == []
+    assert "No Match Data" in res_f["title"]
     assert "Insufficient match data in 2030/2031" in res_f["conclusion"]
 
     # G. shot_location_zone_efficiency with Unknown Club
     res_g = execute_module(seeded_conn, "shot_location_zone_efficiency", {"team_name": "Unknown Club", "season_name": "2024/2025"})
     ver_g = run_automated_verification(seeded_conn, "shot_location_zone_efficiency", res_g["assumptions"], res_g)
     assert ver_g["all_passed"] is False
+    assert res_g["table_rows"] == []
+    assert res_g["charts"]["zone_comparison"] == []
+    assert res_g["pitch"]["zones"] == []
+    assert res_g["pitch"]["markers"] == []
+    assert "No Shot Data" in res_g["title"]
     assert "Insufficient shot data for Unknown Club" in res_g["conclusion"] and "0 shot events" in res_g["conclusion"]
 
     # FastAPI standalone endpoint must propagate verification warning into result.conclusion

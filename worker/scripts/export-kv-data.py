@@ -46,15 +46,42 @@ def fetch_table_dicts(conn: duckdb.DuckDBPyConnection, table: str) -> list[dict[
 
 
 def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    if not DB_PATH.exists():
-        import sys
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Export PitchLab DuckDB telemetry to Cloudflare KV bulk JSON.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output KV bulk JSON path (defaults to worker/data/kv-bulk.json).",
+    )
+    parser.add_argument(
+        "--in-memory",
+        action="store_true",
+        help="Seed the canonical dataset into an in-memory DuckDB instance without reading or writing data/pitchlab.duckdb.",
+    )
+    args = parser.parse_args()
+
+    out_path = args.output.resolve() if args.output is not None else (OUT_DIR / "kv-bulk.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.in_memory:
         sys.path.insert(0, str(ROOT))
         from backend.adapters.statsbomb_loader import ingest_default_statsbomb_dataset
-        from backend.db.connection import db_session
-        with db_session() as init_conn:
-            ingest_default_statsbomb_dataset(init_conn, reset=True)
-    conn = duckdb.connect(str(DB_PATH), read_only=True)
+        from backend.db.schema import init_schema
+
+        conn = duckdb.connect(":memory:")
+        init_schema(conn)
+        ingest_default_statsbomb_dataset(conn, reset=True, seed=42)
+    else:
+        if not DB_PATH.exists():
+            sys.path.insert(0, str(ROOT))
+            from backend.adapters.statsbomb_loader import ingest_default_statsbomb_dataset
+            from backend.db.connection import db_session
+            with db_session() as init_conn:
+                ingest_default_statsbomb_dataset(init_conn, reset=True)
+        conn = duckdb.connect(str(DB_PATH), read_only=True)
     try:
         matches = fetch_table_dicts(conn, "matches")
         teams = fetch_table_dicts(conn, "teams")
@@ -140,7 +167,7 @@ def main() -> None:
             }
         )
 
-    bulk_path = OUT_DIR / "kv-bulk.json"
+    bulk_path = out_path
     bulk_path.write_text(json.dumps(kv_entries, separators=(",", ":")), encoding="utf-8")
 
     print(f"Exported {len(kv_entries)} KV entries to {bulk_path} ({bulk_path.stat().st_size / (1024*1024):.2f} MB)")

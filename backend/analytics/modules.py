@@ -52,7 +52,7 @@ def _compute_team_style_profile(
     assumptions: dict[str, Any],
     mw_start: int | None = None,
     mw_end: int | None = None,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Compute core tactical style KPIs for a club across a season or custom matchweek run."""
     ppda_x = float(assumptions["ppda_def_line_x"])
     ht_x = float(assumptions["high_turnover_x_threshold"])
@@ -117,13 +117,13 @@ def _compute_team_style_profile(
     if matches_played == 0:
         return {
             "matches_played": 0,
-            "possession_share": 50.0,
-            "ppda": 12.0,
-            "build_up_directness": 35.0,
-            "high_turnovers_per90": 4.0,
-            "progressive_passes_per90": 30.0,
-            "box_entries_per90": 12.0,
-            "xg_per90": 1.2,
+            "possession_share": None,
+            "ppda": None,
+            "build_up_directness": None,
+            "high_turnovers_per90": None,
+            "progressive_passes_per90": None,
+            "box_entries_per90": None,
+            "xg_per90": None,
         }
 
     return {
@@ -254,10 +254,21 @@ def run_managerial_impact_tracker(
     after = [t for t in timeline if t["match_week"] >= split_mw]
 
     def _agg_period(label: str, items: list[dict[str, Any]]) -> dict[str, Any]:
-        n = max(1, len(items))
+        if not items:
+            return {
+                "period": label,
+                "matches": 0,
+                "ppg": None,
+                "gf_per90": None,
+                "ga_per90": None,
+                "xgf_per90": None,
+                "xga_per90": None,
+                "xg_diff_per90": None,
+            }
+        n = len(items)
         return {
             "period": label,
-            "matches": len(items),
+            "matches": n,
             "ppg": round(sum(x["pts"] for x in items) / n, 2),
             "gf_per90": round(sum(x["gf"] for x in items) / n, 2),
             "ga_per90": round(sum(x["ga"] for x in items) / n, 2),
@@ -268,7 +279,11 @@ def run_managerial_impact_tracker(
 
     before_stats = _agg_period(f"Before MW {split_mw}", before)
     after_stats = _agg_period(f"From MW {split_mw} Onwards", after)
-    comparison_table = [before_stats, after_stats]
+    comparison_table = (
+        []
+        if before_stats["matches"] == 0 and after_stats["matches"] == 0
+        else [before_stats, after_stats]
+    )
 
     # Pitch markers: shots created before vs after milestone
     shot_rows = conn.execute(
@@ -298,18 +313,20 @@ def run_managerial_impact_tracker(
             }
         )
 
-    ppg_delta = round(after_stats["ppg"] - before_stats["ppg"], 2)
-    xgd_delta = round(after_stats["xg_diff_per90"] - before_stats["xg_diff_per90"], 2)
-    direction = "improving" if xgd_delta > 0.05 else ("declining" if xgd_delta < -0.05 else "holding steady")
-
     if before_stats["matches"] == 0 and after_stats["matches"] == 0:
+        title = f"Managerial Impact Tracker — {team} ({season} · No Match Data)"
         summary = f"No match data found for {team} in {season}."
     elif before_stats["matches"] == 0 or after_stats["matches"] == 0:
+        title = f"Managerial Impact Tracker — {team} ({season} · Incomplete Split at MW {split_mw})"
         summary = (
             f"Insufficient split sample for {team} in {season} at MW {split_mw} "
             f"({before_stats['matches']} matches before, {after_stats['matches']} from MW {split_mw} onward)."
         )
     else:
+        ppg_delta = round(after_stats["ppg"] - before_stats["ppg"], 2)
+        xgd_delta = round(after_stats["xg_diff_per90"] - before_stats["xg_diff_per90"], 2)
+        direction = "improving" if xgd_delta > 0.05 else ("declining" if xgd_delta < -0.05 else "holding steady")
+        title = f"Managerial Impact Tracker — {team} ({season})"
         summary = (
             f"{team} is {direction} after MW {split_mw}: rolling xG differential moved by "
             f"{xgd_delta:+.2f} per match ({before_stats['xg_diff_per90']:+.2f} → {after_stats['xg_diff_per90']:+.2f}) "
@@ -318,7 +335,7 @@ def run_managerial_impact_tracker(
 
     return {
         "module_id": "managerial_impact_tracker",
-        "title": f"Managerial Impact Tracker — {team} ({season})",
+        "title": title,
         "coord_grid": grid,
         "summary": summary,
         "charts": {
@@ -357,11 +374,14 @@ def run_tactical_intervention_comparison(
     season_profile = _compute_team_style_profile(conn, team, season, cfg)
     run_profile = _compute_team_style_profile(conn, team, season, cfg, start_mw, end_mw)
 
-    # League baselines across all clubs for percentile calculation
+    # League baselines across all clubs with recorded matches in this season
     all_teams = [
         r[0] for r in conn.execute("SELECT DISTINCT team_name FROM teams ORDER BY team_name").fetchall()
     ]
-    league_profiles = [_compute_team_style_profile(conn, t, season, cfg) for t in all_teams]
+    league_profiles = [
+        lp for lp in (_compute_team_style_profile(conn, t, season, cfg) for t in all_teams)
+        if lp["matches_played"] > 0
+    ]
 
     def _percentile(val: float, series: list[float], lower_is_better: bool = False) -> int:
         if not series:
@@ -378,36 +398,44 @@ def run_tactical_intervention_comparison(
         ("box_entries_per90", "Penalty Box Entries / 90", False),
     ]
 
+    season_ok = season_profile["matches_played"] > 0
+    run_ok = run_profile["matches_played"] > 0
     radar_data = []
     table_rows = []
-    for key, label, invert in metrics_spec:
-        series = [lp[key] for lp in league_profiles]
-        s_val = season_profile[key]
-        r_val = run_profile[key]
-        s_pct = _percentile(s_val, series, lower_is_better=invert)
-        r_pct = _percentile(r_val, series, lower_is_better=invert)
-        delta = round(r_val - s_val, 2)
-        radar_data.append(
-            {
-                "metric": label,
-                "key": key,
-                "season_avg": s_val,
-                "intervention_run": r_val,
-                "season_percentile": s_pct,
-                "run_percentile": r_pct,
-                "delta": delta,
-            }
-        )
-        table_rows.append(
-            {
-                "metric": label,
-                "season_avg": s_val,
-                "intervention_run": r_val,
-                "delta": delta,
-                "season_pct": s_pct,
-                "run_pct": r_pct,
-            }
-        )
+    if season_ok:
+        for key, label, invert in metrics_spec:
+            series = [float(lp[key]) for lp in league_profiles if lp[key] is not None]
+            s_val = float(season_profile[key])
+            s_pct = _percentile(s_val, series, lower_is_better=invert)
+            if run_ok:
+                r_val = float(run_profile[key])
+                r_pct = _percentile(r_val, series, lower_is_better=invert)
+                delta = round(r_val - s_val, 2)
+            else:
+                r_val = None
+                r_pct = None
+                delta = None
+            radar_data.append(
+                {
+                    "metric": label,
+                    "key": key,
+                    "season_avg": s_val,
+                    "intervention_run": r_val,
+                    "season_percentile": s_pct,
+                    "run_percentile": r_pct,
+                    "delta": delta,
+                }
+            )
+            table_rows.append(
+                {
+                    "metric": label,
+                    "season_avg": s_val,
+                    "intervention_run": r_val,
+                    "delta": delta,
+                    "season_pct": s_pct,
+                    "run_pct": r_pct,
+                }
+            )
 
     # Progressive passes & high turnovers during the intervention window for SVG pitch
     ev_rows = conn.execute(
@@ -451,21 +479,32 @@ def run_tactical_intervention_comparison(
                 }
             )
 
-    if run_profile["matches_played"] == 0 or season_profile["matches_played"] == 0:
+    if not season_ok:
+        title = f"Tactical Intervention Comparison — {team} ({season} · No Match Data)"
         summary = (
             f"Insufficient match data for {team} during MW {start_mw}–{end_mw} in {season} "
-            f"({run_profile['matches_played']} matches in window, {season_profile['matches_played']} in season)."
+            "(0 matches in window, 0 in season)."
         )
+        pitch_title = f"No Intervention Pitch Telemetry Available ({team} · {season})"
+    elif not run_ok:
+        title = f"Tactical Intervention Comparison — {team} (MW {start_mw}–{end_mw} Unavailable · {season} Baseline Only)"
+        summary = (
+            f"Insufficient match data for {team} during MW {start_mw}–{end_mw} in {season} "
+            f"(0 matches in window, {season_profile['matches_played']} in season; showing {season} baseline only)."
+        )
+        pitch_title = f"No Window Events Recorded ({team} · MW {start_mw}–{end_mw} Has 0 Matches)"
     else:
+        title = f"Tactical Intervention Comparison — {team} (MW {start_mw}–{end_mw} vs Season Avg)"
         summary = (
             f"During MW {start_mw}–{end_mw} ({run_profile['matches_played']} matches), {team} recorded PPDA of "
             f"{run_profile['ppda']:.2f} (season avg {season_profile['ppda']:.2f}), {run_profile['possession_share']:.1f}% possession "
             f"(season {season_profile['possession_share']:.1f}%), and {run_profile['progressive_passes_per90']:.1f} progressive passes/90."
         )
+        pitch_title = f"{team} Progressive Passes (Blue Arrows) & High Turnovers (Red Dots) in MW {start_mw}–{end_mw}"
 
     return {
         "module_id": "tactical_intervention_comparison",
-        "title": f"Tactical Intervention Comparison — {team} (MW {start_mw}–{end_mw} vs Season Avg)",
+        "title": title,
         "coord_grid": grid,
         "summary": summary,
         "charts": {
@@ -475,10 +514,12 @@ def run_tactical_intervention_comparison(
                 "end_mw": end_mw,
                 "matches": run_profile["matches_played"],
                 "season_matches": season_profile["matches_played"],
+                "intervention_available": run_ok,
+                "season_available": season_ok,
             },
         },
         "pitch": {
-            "title": f"{team} Progressive Passes (Blue Arrows) & High Turnovers (Red Dots) in MW {start_mw}–{end_mw}",
+            "title": pitch_title,
             "arrows": arrows[:35],
             "markers": markers[:35],
             "zones": [],
@@ -623,8 +664,10 @@ def run_opposition_scouting_one_pager(
     ).fetchall()
 
     if opp_style["matches_played"] == 0:
+        opp_title = f"Opposition Scouting One-Pager — {opp} ({season} · No Match Data)"
         opp_summary = f"No match data found for {opp} in {season}."
     else:
+        opp_title = f"Opposition Scouting One-Pager — {opp} ({season})"
         opp_summary = (
             f"Pre-Match Briefing on {opp}: PPDA {opp_style['ppda']:.2f}, {opp_style['possession_share']:.1f}% possession, "
             f"{opp_style['build_up_directness']:.1f}% long build-up share, primary shape {formations_used[0][0] if formations_used else 'unknown'}. "
@@ -633,7 +676,7 @@ def run_opposition_scouting_one_pager(
 
     return {
         "module_id": "opposition_scouting_one_pager",
-        "title": f"Opposition Scouting One-Pager — {opp} ({season})",
+        "title": opp_title,
         "coord_grid": grid,
         "summary": opp_summary,
         "charts": {
@@ -840,9 +883,16 @@ def run_multi_season_player_progression(
         else f"No players met the {min_mins} minute threshold in both {s1} and {s2}."
     )
 
+    comp_title = composite.replace("_", " ").title()
+    prog_title = (
+        f"Multi-Season Player Progression ({comp_title}: {s1} → {s2})"
+        if top_players
+        else f"Multi-Season Player Progression ({comp_title}: {s1} → {s2} · No Qualifiers)"
+    )
+
     return {
         "module_id": "multi_season_player_progression",
-        "title": f"Multi-Season Player Progression ({composite.replace('_', ' ').title()}: {s1} → {s2})",
+        "title": prog_title,
         "coord_grid": grid,
         "summary": scouting_summary,
         "charts": {
@@ -888,27 +938,85 @@ def run_tactical_fit_recruitment_matcher(
     season = str(cfg["season_name"])
     grid = str(cfg["coord_grid"])
 
-    p_row = conn.execute(
-        "SELECT player_id, player_name, team_name, primary_position FROM players WHERE LOWER(player_name) LIKE LOWER(?) LIMIT 1",
-        [f"%{player_name}%"],
-    ).fetchone()
-    player_matched = p_row is not None
-    if not p_row:
+    p_row = None
+    if player_name.strip():
         p_row = conn.execute(
-            "SELECT player_id, player_name, team_name, primary_position FROM players LIMIT 1"
+            "SELECT player_id, player_name, team_name, primary_position FROM players WHERE LOWER(player_name) LIKE LOWER(?) LIMIT 1",
+            [f"%{player_name}%"],
         ).fetchone()
+    player_matched = p_row is not None
 
-    if p_row:
-        resolved_player = str(p_row[1])
-        current_club = str(p_row[2])
-        player_pos = str(p_row[3])
-    else:
-        resolved_player = player_name
-        current_club = str(cfg["team_name"])
-        player_pos = ""
+    if not player_matched:
+        target_style = _compute_team_style_profile(conn, target_club, season, cfg)
+        return {
+            "module_id": "tactical_fit_recruitment_matcher",
+            "title": f"Tactical Fit Matcher — {player_name} → {target_club} (Player Not Found)",
+            "coord_grid": grid,
+            "summary": (
+                f"Player '{player_name}' was not found in the squad catalog for {season}; "
+                "no tactical fit score or style comparison was computed."
+            ),
+            "charts": {
+                "fit_score": None,
+                "player_name": player_name,
+                "requested_player": player_name,
+                "player_matched": False,
+                "current_club": None,
+                "target_club": target_club,
+                "current_club_matches": 0,
+                "target_club_matches": target_style["matches_played"],
+                "radar": [],
+                "adaptation_risks": [],
+            },
+            "pitch": {
+                "title": f"No On-Ball Footprint Available ({player_name} Not Found in {season})",
+                "markers": [],
+                "arrows": [],
+                "zones": [],
+            },
+            "table_columns": ["dimension", "player_team_val", "target_club_val", "delta", "overlap_pct", "status"],
+            "table_rows": [],
+            "assumptions": cfg,
+        }
+
+    resolved_player = str(p_row[1])
+    current_club = str(p_row[2])
+    player_pos = str(p_row[3])
 
     current_style = _compute_team_style_profile(conn, current_club, season, cfg)
     target_style = _compute_team_style_profile(conn, target_club, season, cfg)
+
+    if current_style["matches_played"] == 0 or target_style["matches_played"] == 0:
+        return {
+            "module_id": "tactical_fit_recruitment_matcher",
+            "title": f"Tactical Fit Matcher — {resolved_player} ({current_club}) → {target_club} (Insufficient Match Sample)",
+            "coord_grid": grid,
+            "summary": (
+                f"Insufficient match data in {season} to compare {resolved_player} "
+                f"({current_club}, {current_style['matches_played']} matches) with {target_club} ({target_style['matches_played']} matches)."
+            ),
+            "charts": {
+                "fit_score": None,
+                "player_name": resolved_player,
+                "requested_player": player_name,
+                "player_matched": True,
+                "current_club": current_club,
+                "target_club": target_club,
+                "current_club_matches": current_style["matches_played"],
+                "target_club_matches": target_style["matches_played"],
+                "radar": [],
+                "adaptation_risks": [],
+            },
+            "pitch": {
+                "title": f"{resolved_player} On-Ball Footprint Unavailable ({season})",
+                "markers": [],
+                "arrows": [],
+                "zones": [],
+            },
+            "table_columns": ["dimension", "player_team_val", "target_club_val", "delta", "overlap_pct", "status"],
+            "table_rows": [],
+            "assumptions": cfg,
+        }
 
     dims = [
         ("ppda", "Pressing Intensity (PPDA)", 20.0),
@@ -925,8 +1033,8 @@ def run_tactical_fit_recruitment_matcher(
     risks = []
 
     for key, label, scale in dims:
-        c_val = current_style[key]
-        t_val = target_style[key]
+        c_val = float(current_style[key])
+        t_val = float(target_style[key])
         gap = round(t_val - c_val, 2)
         norm_diff = min(1.0, abs(gap) / scale)
         overlap_pct = int(round((1.0 - norm_diff) * 100))
@@ -988,18 +1096,10 @@ def run_tactical_fit_recruitment_matcher(
                 }
             )
 
-    if not player_matched:
-        fit_summary = f"Player '{player_name}' was not found in the squad catalog for {season}."
-    elif current_style["matches_played"] == 0 or target_style["matches_played"] == 0:
-        fit_summary = (
-            f"Insufficient match data in {season} to compare {resolved_player} "
-            f"({current_club}, {current_style['matches_played']} matches) with {target_club} ({target_style['matches_played']} matches)."
-        )
-    else:
-        fit_summary = (
-            f"{resolved_player} ({player_pos}, {current_club}) achieves a {fit_score}% Tactical Fit Score for {target_club}. "
-            + risks[0]
-        )
+    fit_summary = (
+        f"{resolved_player} ({player_pos}, {current_club}) achieves a {fit_score}% Tactical Fit Score for {target_club}. "
+        + risks[0]
+    )
 
     return {
         "module_id": "tactical_fit_recruitment_matcher",
@@ -1164,7 +1264,11 @@ def run_league_table_vs_underlying_play(
 
     return {
         "module_id": "league_table_vs_underlying_play",
-        "title": f"League Table vs Underlying Play (Simulated xPTS — {season})",
+        "title": (
+            f"League Table vs Underlying Play (Simulated xPTS — {season})"
+            if table_rows
+            else f"League Table vs Underlying Play ({season} · No Match Data)"
+        ),
         "coord_grid": grid,
         "summary": (
             f"Shot-level Poisson xPTS model across {len(matches)} matches ({season}): "
@@ -1361,13 +1465,42 @@ def run_shot_location_zone_efficiency(
 
     best_zone = max(table_rows, key=lambda r: (r["goals"], r["total_xg"])) if table_rows else None
     if team_total_shots == 0 or not best_zone:
-        shot_summary = f"No shot data found for {team} in {season}."
-    else:
-        shot_summary = (
-            f"{team} took {team_total_shots} shots in {season}. Highest goal output came from "
-            f"{best_zone['zone']} ({best_zone['goals']} goals from {best_zone['team_shots']} shots, "
-            f"{best_zone['conversion_pct']:.1f}% conversion vs {best_zone['league_conversion_pct']:.1f}% league avg)."
-        )
+        return {
+            "module_id": "shot_location_zone_efficiency",
+            "title": f"Shot Location & Zone Efficiency — {team} ({season} · No Shot Data)",
+            "coord_grid": grid,
+            "summary": f"No shot data found for {team} in {season}.",
+            "charts": {
+                "zone_comparison": [],
+                "total_shots": 0,
+            },
+            "pitch": {
+                "title": f"No Shot Locations Recorded for {team} ({season})",
+                "zones": [],
+                "markers": [],
+                "arrows": [],
+            },
+            "table_columns": [
+                "zone",
+                "team_shots",
+                "shot_share_pct",
+                "league_share_pct",
+                "goals",
+                "total_xg",
+                "xg_per_shot",
+                "league_xg_per_shot",
+                "conversion_pct",
+                "league_conversion_pct",
+            ],
+            "table_rows": [],
+            "assumptions": cfg,
+        }
+
+    shot_summary = (
+        f"{team} took {team_total_shots} shots in {season}. Highest goal output came from "
+        f"{best_zone['zone']} ({best_zone['goals']} goals from {best_zone['team_shots']} shots, "
+        f"{best_zone['conversion_pct']:.1f}% conversion vs {best_zone['league_conversion_pct']:.1f}% league avg)."
+    )
 
     return {
         "module_id": "shot_location_zone_efficiency",

@@ -566,10 +566,9 @@ def _conclusion_tactical_fit(result: dict[str, Any]) -> str:
     cfg = result.get("assumptions", {})
     season = str(cfg.get("season_name", ""))
     charts = result.get("charts", {})
-    player = str(charts.get("player_name", "The target player"))
-    current_club = str(charts.get("current_club", "their current club"))
-    target_club = str(charts.get("target_club", "the target club"))
-    fit_score = int(charts.get("fit_score", 0))
+    player = str(charts.get("player_name") or "The target player")
+    current_club = str(charts.get("current_club") or "their current club")
+    target_club = str(charts.get("target_club") or "the target club")
     rows = result.get("table_rows", [])
 
     if charts.get("player_matched") is False:
@@ -581,11 +580,13 @@ def _conclusion_tactical_fit(result: dict[str, Any]) -> str:
 
     curr_matches = int(charts.get("current_club_matches", 1))
     targ_matches = int(charts.get("target_club_matches", 1))
-    if curr_matches <= 0 or targ_matches <= 0 or not rows:
+    if curr_matches <= 0 or targ_matches <= 0 or not rows or charts.get("fit_score") is None:
         return (
             f"Insufficient match data in {season} to evaluate tactical fit for {player} "
             f"({current_club}: {curr_matches} matches; {target_club}: {targ_matches} matches)."
         )
+
+    fit_score = int(charts["fit_score"])
 
     if current_club == target_club:
         return (

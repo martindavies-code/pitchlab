@@ -94,6 +94,20 @@ export function VisualCanvasPane({
     window.print();
   };
 
+  const hasTableRows = Boolean(result && result.table_rows.length > 0);
+  const hasPitchContent = Boolean(
+    result &&
+      (result.pitch.markers.length > 0 || result.pitch.arrows.length > 0 || result.pitch.zones.length > 0)
+  );
+  const mwWindow = result?.charts?.match_window as Record<string, any> | undefined;
+  const isBaselineOnlyIntervention = Boolean(
+    result &&
+      result.module_id === "tactical_intervention_comparison" &&
+      hasTableRows &&
+      mwWindow &&
+      Number(mwWindow.matches ?? 0) === 0
+  );
+
   return (
     <section className="panel-card" style={{ display: "flex", flexDirection: "column", gap: "0.9rem", minWidth: 0 }}>
       {/* Standalone Template Switcher */}
@@ -120,7 +134,7 @@ export function VisualCanvasPane({
         <>
           {/* Result Header & Export Controls */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.75rem", flexWrap: "wrap" }}>
-            <div style={{ flex: 1, minWidth: 260 }}>
+            <div style={{ flex: 1, minWidth: "min(260px, 100%)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
                 <h2 style={{ margin: 0, fontSize: "1.1rem" }}>{result.title}</h2>
                 {verification && (
@@ -138,10 +152,22 @@ export function VisualCanvasPane({
               <button type="button" className="btn" onClick={onOpenAssumptions}>
                 Assumptions & Logic
               </button>
-              <button type="button" className="btn" onClick={handleExportCsv}>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleExportCsv}
+                disabled={!hasTableRows}
+                title={hasTableRows ? "Download normalized table as CSV" : "CSV export unavailable: no table rows"}
+              >
                 Export CSV
               </button>
-              <button type="button" className="btn" onClick={handleExportPng}>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleExportPng}
+                disabled={!hasPitchContent}
+                title={hasPitchContent ? "Download pitch SVG as PNG" : "PNG export unavailable: no pitch diagram"}
+              >
                 Export PNG
               </button>
               <button type="button" className="btn" onClick={handleExportPdfPrint}>
@@ -171,16 +197,26 @@ export function VisualCanvasPane({
           <ModuleCharts result={result} />
 
           {/* Interactive SVG Pitch (when pitch markers, arrows, or zones exist) */}
-          {(result.pitch.markers.length > 0 || result.pitch.arrows.length > 0 || result.pitch.zones.length > 0) && (
+          {hasPitchContent && (
             <PitchSvg pitch={result.pitch} coordGrid={result.coord_grid} svgRef={pitchSvgRef} />
           )}
 
           {/* Responsive Semantic Data Table */}
-          <ResponsiveTable
-            caption={`${result.title} — Normalized Data Table (${result.assumptions.normalisation}, min ${result.assumptions.min_minutes}m)`}
-            columns={result.table_columns}
-            rows={result.table_rows}
-          />
+          {hasTableRows ? (
+            <ResponsiveTable
+              caption={
+                isBaselineOnlyIntervention
+                  ? `${result.title} — Season Baseline Only (MW ${mwWindow?.start_mw ?? result.assumptions.start_mw}–${mwWindow?.end_mw ?? result.assumptions.end_mw} unavailable: 0 matches) (${result.assumptions.normalisation}, min ${result.assumptions.min_minutes}m)`
+                  : `${result.title} — Normalized Data Table (${result.assumptions.normalisation}, min ${result.assumptions.min_minutes}m)`
+              }
+              columns={result.table_columns}
+              rows={result.table_rows}
+            />
+          ) : (
+            <div className="sub-card" role="status" style={{ fontSize: "0.82rem", color: "var(--text-muted)" }}>
+              No data table rows available for this selection (CSV export disabled).
+            </div>
+          )}
         </>
       )}
     </section>

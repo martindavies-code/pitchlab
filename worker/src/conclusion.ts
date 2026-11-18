@@ -604,7 +604,6 @@ function conclusionTacticalFit(result: ModuleResultPayload): string {
   const player = String(charts.player_name || "The target player");
   const currentClub = String(charts.current_club || "their current club");
   const targetClub = String(charts.target_club || "the target club");
-  const fitScore = Number(charts.fit_score ?? 0);
   const rows = result.table_rows || [];
 
   if (charts.player_matched === false) {
@@ -617,12 +616,14 @@ function conclusionTacticalFit(result: ModuleResultPayload): string {
 
   const currMatches = Math.trunc(Number(charts.current_club_matches ?? 1));
   const targMatches = Math.trunc(Number(charts.target_club_matches ?? 1));
-  if (currMatches <= 0 || targMatches <= 0 || !rows.length) {
+  if (currMatches <= 0 || targMatches <= 0 || !rows.length || charts.fit_score === null || charts.fit_score === undefined) {
     return (
       `Insufficient match data in ${season} to evaluate tactical fit for ${player} ` +
       `(${currentClub}: ${currMatches} matches; ${targetClub}: ${targMatches} matches).`
     );
   }
+
+  const fitScore = Number(charts.fit_score);
 
   if (currentClub === targetClub) {
     return (

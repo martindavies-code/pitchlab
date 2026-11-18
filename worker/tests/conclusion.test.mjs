@@ -1,27 +1,46 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import { registerHooks } from "node:module";
+import * as nodeModule from "node:module";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_ROOT = path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(WORKER_ROOT, "..");
 
-// Resolve extensionless TypeScript imports (e.g. "./conclusion" -> "./conclusion.ts") in Node 24
-registerHooks({
-  resolve(specifier, context, nextResolve) {
+// Resolve extensionless TypeScript imports (e.g. "./conclusion" -> "./conclusion.ts")
+// across Node >= 22.6.0 (registerHooks where available, Module.register fallback on older 22.x).
+if (typeof nodeModule.registerHooks === "function") {
+  nodeModule.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (
+        (specifier.startsWith("./") || specifier.startsWith("../")) &&
+        !specifier.endsWith(".ts") &&
+        !specifier.endsWith(".js") &&
+        !specifier.endsWith(".mjs")
+      ) {
+        return nextResolve(`${specifier}.ts`, context);
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+} else if (typeof nodeModule.register === "function") {
+  const hookSource = `export function resolve(specifier, context, nextResolve) {
     if (
       (specifier.startsWith("./") || specifier.startsWith("../")) &&
       !specifier.endsWith(".ts") &&
       !specifier.endsWith(".js") &&
       !specifier.endsWith(".mjs")
     ) {
-      return nextResolve(`${specifier}.ts`, context);
+      return nextResolve(specifier + ".ts", context);
     }
     return nextResolve(specifier, context);
-  },
-});
+  }`;
+  nodeModule.register(`data:text/javascript;base64,${Buffer.from(hookSource).toString("base64")}`);
+}
 
 const { getDatasetStore, invalidateDatasetCache } = await import("../src/data.ts");
 const { executeModule, runAutomatedVerification } = await import("../src/analytics.ts");
@@ -36,7 +55,73 @@ const {
 } = await import("../src/workflow.ts");
 const workerEntry = (await import("../src/index.ts")).default;
 
-const bulkEntries = JSON.parse(fs.readFileSync(path.join(WORKER_ROOT, "data", "kv-bulk.json"), "utf8"));
+let tempFixtureDir = null;
+
+function resolvePythonExecutable() {
+  const candidates = [
+    process.env.PYTHON,
+    path.join(REPO_ROOT, ".venv", "Scripts", "python.exe"),
+    path.join(REPO_ROOT, ".venv", "bin", "python"),
+    "python3",
+    "python",
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if ((candidate.includes(path.sep) || candidate.includes("/")) && !fs.existsSync(candidate)) {
+      continue;
+    }
+    try {
+      execFileSync(candidate, ["-c", "import duckdb"], { stdio: "ignore" });
+      return candidate;
+    } catch {
+      // Try next Python candidate
+    }
+  }
+  throw new Error(
+    "Unable to locate a Python interpreter with duckdb installed to prepare a temporary KV fixture. " +
+      "Set PYTHON, PITCHLAB_KV_BULK_PATH, or run worker/scripts/export-kv-data.py."
+  );
+}
+
+function loadBulkKvEntries() {
+  const overridePath = process.env.PITCHLAB_KV_BULK_PATH?.trim();
+  if (overridePath) {
+    if (!fs.existsSync(overridePath)) {
+      throw new Error(`PITCHLAB_KV_BULK_PATH does not exist: ${overridePath}`);
+    }
+    return JSON.parse(fs.readFileSync(overridePath, "utf8"));
+  }
+
+  const defaultBulkPath = path.join(WORKER_ROOT, "data", "kv-bulk.json");
+  if (fs.existsSync(defaultBulkPath)) {
+    return JSON.parse(fs.readFileSync(defaultBulkPath, "utf8"));
+  }
+
+  tempFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "pitchlab-worker-kv-"));
+  const tempBulkPath = path.join(tempFixtureDir, "kv-bulk.json");
+  try {
+    const pythonExe = resolvePythonExecutable();
+    const exportScript = path.join(WORKER_ROOT, "scripts", "export-kv-data.py");
+    execFileSync(pythonExe, [exportScript, "--in-memory", "--output", tempBulkPath], {
+      cwd: REPO_ROOT,
+      stdio: "pipe",
+    });
+    return JSON.parse(fs.readFileSync(tempBulkPath, "utf8"));
+  } catch (err) {
+    fs.rmSync(tempFixtureDir, { recursive: true, force: true });
+    tempFixtureDir = null;
+    throw err;
+  }
+}
+
+test.after(() => {
+  if (tempFixtureDir && fs.existsSync(tempFixtureDir)) {
+    fs.rmSync(tempFixtureDir, { recursive: true, force: true });
+    tempFixtureDir = null;
+  }
+});
+
+const bulkEntries = loadBulkKvEntries();
 const backingMap = new Map(bulkEntries.map((item) => [item.key, item.value]));
 const sessionKv = new Map();
 
@@ -305,7 +390,7 @@ test("Opposition scouting match-state direction (canonical + synthetic)", () => 
 });
 
 test("Missing samples fail verification & refuse fabricated defaults across all 7 modules", async () => {
-  // A. intervention MW 30-38
+  // A. intervention MW 30-38 (empty run window + valid season baseline)
   const resA = executeModule(canonicalStore, "tactical_intervention_comparison", {
     team_name: "Arsenal",
     season_name: "2024/2025",
@@ -315,12 +400,48 @@ test("Missing samples fail verification & refuse fabricated defaults across all 
   const verA = runAutomatedVerification(canonicalStore, "tactical_intervention_comparison", resA.assumptions, resA);
   const conclA = buildAnalysisConclusion(resA, null, verA);
   assert.equal(resA.charts.match_window.matches, 0);
+  assert.equal(resA.charts.match_window.season_matches, 18);
+  assert.equal(resA.charts.match_window.intervention_available, false);
+  assert.equal(resA.charts.match_window.season_available, true);
+  assert.ok(resA.title.includes("Baseline Only") && resA.title.includes("Unavailable"));
+  assert.equal(resA.charts.radar.length, 6);
+  assert.equal(resA.table_rows.length, 6);
+  for (const item of resA.charts.radar) {
+    assert.equal(typeof item.season_avg, "number");
+    assert.equal(typeof item.season_percentile, "number");
+    assert.equal(item.intervention_run, null);
+    assert.equal(item.run_percentile, null);
+    assert.equal(item.delta, null);
+  }
+  for (const row of resA.table_rows) {
+    assert.equal(typeof row.season_avg, "number");
+    assert.equal(typeof row.season_pct, "number");
+    assert.equal(row.intervention_run, null);
+    assert.equal(row.run_pct, null);
+    assert.equal(row.delta, null);
+  }
   assert.equal(verA.all_passed, false);
   assert.ok(conclA.includes("Insufficient match sample") && conclA.includes("0 matches"));
   for (const fabricated of ["clear tactical", "12.00 PPDA", "50.0% → 50.0%", "35.0% → 35.0%", "30.0 progressive"]) {
     assert.equal(conclA.includes(fabricated), false, `Fabricated phrase '${fabricated}' in: ${conclA}`);
   }
   assert.ok(conclA.includes("Verification warning"));
+
+  // A2. intervention unknown season 2030/2031 (neither baseline nor run available)
+  const resAEmpty = executeModule(canonicalStore, "tactical_intervention_comparison", {
+    team_name: "Arsenal",
+    season_name: "2030/2031",
+    start_mw: 1,
+    end_mw: 5,
+  });
+  const verAEmpty = runAutomatedVerification(canonicalStore, "tactical_intervention_comparison", resAEmpty.assumptions, resAEmpty);
+  assert.equal(resAEmpty.charts.match_window.matches, 0);
+  assert.equal(resAEmpty.charts.match_window.season_matches, 0);
+  assert.equal(resAEmpty.charts.match_window.season_available, false);
+  assert.equal(resAEmpty.charts.match_window.intervention_available, false);
+  assert.deepEqual(resAEmpty.charts.radar, []);
+  assert.deepEqual(resAEmpty.table_rows, []);
+  assert.equal(verAEmpty.all_passed, false);
 
   // B. managerial 2030/2031
   const resB = executeModule(canonicalStore, "managerial_impact_tracker", {
@@ -329,6 +450,9 @@ test("Missing samples fail verification & refuse fabricated defaults across all 
   });
   const verB = runAutomatedVerification(canonicalStore, "managerial_impact_tracker", resB.assumptions, resB);
   assert.equal(verB.all_passed, false);
+  assert.deepEqual(resB.table_rows, []);
+  assert.deepEqual(resB.charts.timeline, []);
+  assert.ok(resB.title.includes("No Match Data"));
   assert.ok(resB.conclusion.includes("Insufficient match data") && resB.conclusion.includes("0 matches"));
   assert.equal(resB.conclusion.includes("held steady"), false);
 
@@ -350,7 +474,12 @@ test("Missing samples fail verification & refuse fabricated defaults across all 
   });
   const verBOne = runAutomatedVerification(oneSideStore, "managerial_impact_tracker", resBOne.assumptions, resBOne);
   assert.equal(resBOne.table_rows[0].matches, 0);
+  assert.equal(resBOne.table_rows[0].ppg, null);
+  assert.equal(resBOne.table_rows[0].xg_diff_per90, null);
   assert.ok(resBOne.table_rows[1].matches > 0);
+  assert.equal(typeof resBOne.table_rows[1].ppg, "number");
+  assert.equal(typeof resBOne.table_rows[1].xg_diff_per90, "number");
+  assert.ok(resBOne.title.includes("Incomplete Split"));
   assert.equal(verBOne.all_passed, false);
   assert.ok(resBOne.conclusion.includes("Insufficient pre-split sample"));
 
@@ -361,6 +490,12 @@ test("Missing samples fail verification & refuse fabricated defaults across all 
   });
   const verC = runAutomatedVerification(canonicalStore, "opposition_scouting_one_pager", resC.assumptions, resC);
   assert.equal(verC.all_passed, false);
+  assert.equal(resC.charts.style_kpis.matches_played, 0);
+  assert.equal(resC.charts.style_kpis.ppda, null);
+  assert.equal(resC.charts.style_kpis.possession_share, null);
+  assert.deepEqual(resC.table_rows, []);
+  assert.deepEqual(resC.pitch.zones, []);
+  assert.ok(resC.title.includes("No Match Data"));
   assert.ok(resC.conclusion.includes("Insufficient data to scout Unknown Club") && resC.conclusion.includes("0 matches"));
   for (const fabricated of ["4-3-3", "balanced", "selective mid-press", "span evenly"]) {
     assert.equal(resC.conclusion.includes(fabricated), false);
@@ -370,6 +505,9 @@ test("Missing samples fail verification & refuse fabricated defaults across all 
   const resD = executeModule(canonicalStore, "multi_season_player_progression", { min_minutes: 99999 });
   const verD = runAutomatedVerification(canonicalStore, "multi_season_player_progression", resD.assumptions, resD);
   assert.equal(verD.all_passed, false);
+  assert.deepEqual(resD.table_rows, []);
+  assert.deepEqual(resD.charts.leaderboard, []);
+  assert.ok(resD.title.includes("No Qualifiers"));
   assert.ok(resD.conclusion.includes("Insufficient qualifying player sample") && resD.conclusion.includes("0 players"));
 
   const allDropConcl = buildAnalysisConclusion({
@@ -389,13 +527,23 @@ test("Missing samples fail verification & refuse fabricated defaults across all 
   assert.ok(allDropConcl.includes("every qualifier declined"));
   assert.equal(allDropConcl.includes("improved the most"), false);
 
-  // E. tactical fit unmatched player & unknown season
+  // E. tactical fit unmatched player, unknown season, and valid same-club request
   const resE1 = executeModule(canonicalStore, "tactical_fit_recruitment_matcher", {
     player_name: "Nonexistent Player",
     target_club: "Arsenal",
   });
   const verE1 = runAutomatedVerification(canonicalStore, "tactical_fit_recruitment_matcher", resE1.assumptions, resE1);
   assert.equal(verE1.all_passed, false);
+  assert.ok(resE1.title.includes("Nonexistent Player") && resE1.title.includes("Player Not Found"));
+  assert.equal(JSON.stringify(resE1).includes("David Raya"), false);
+  assert.equal(resE1.charts.player_matched, false);
+  assert.equal(resE1.charts.fit_score, null);
+  assert.equal(resE1.charts.current_club, null);
+  assert.deepEqual(resE1.charts.radar, []);
+  assert.deepEqual(resE1.charts.adaptation_risks, []);
+  assert.deepEqual(resE1.table_rows, []);
+  assert.deepEqual(resE1.pitch.markers, []);
+  assert.equal(resE1.summary.includes("minimal tactical friction"), false);
   assert.ok(resE1.conclusion.includes("Insufficient data to evaluate tactical fit for Nonexistent Player"));
 
   const resE2 = executeModule(canonicalStore, "tactical_fit_recruitment_matcher", {
@@ -405,12 +553,29 @@ test("Missing samples fail verification & refuse fabricated defaults across all 
   });
   const verE2 = runAutomatedVerification(canonicalStore, "tactical_fit_recruitment_matcher", resE2.assumptions, resE2);
   assert.equal(verE2.all_passed, false);
+  assert.equal(resE2.charts.fit_score, null);
+  assert.deepEqual(resE2.charts.radar, []);
+  assert.deepEqual(resE2.table_rows, []);
+  assert.deepEqual(resE2.pitch.markers, []);
   assert.ok(resE2.conclusion.includes("Insufficient match data in 2030/2031"));
+
+  const resESame = executeModule(canonicalStore, "tactical_fit_recruitment_matcher", {
+    player_name: "Bukayo Saka",
+    target_club: "Arsenal",
+  });
+  const verESame = runAutomatedVerification(canonicalStore, "tactical_fit_recruitment_matcher", resESame.assumptions, resESame);
+  assert.equal(verESame.all_passed, true);
+  assert.equal(resESame.charts.player_matched, true);
+  assert.equal(resESame.charts.fit_score, 99);
+  assert.equal(resESame.table_rows.length, 6);
 
   // F & G. League xPTS 2030/2031 & Shot zones Unknown Club
   const resF = executeModule(canonicalStore, "league_table_vs_underlying_play", { season_name: "2030/2031" });
   const verF = runAutomatedVerification(canonicalStore, "league_table_vs_underlying_play", resF.assumptions, resF);
   assert.equal(verF.all_passed, false);
+  assert.deepEqual(resF.table_rows, []);
+  assert.deepEqual(resF.charts.scatter, []);
+  assert.ok(resF.title.includes("No Match Data"));
   assert.ok(resF.conclusion.includes("Insufficient match data in 2030/2031"));
 
   const resG = executeModule(canonicalStore, "shot_location_zone_efficiency", {
@@ -419,6 +584,11 @@ test("Missing samples fail verification & refuse fabricated defaults across all 
   });
   const verG = runAutomatedVerification(canonicalStore, "shot_location_zone_efficiency", resG.assumptions, resG);
   assert.equal(verG.all_passed, false);
+  assert.deepEqual(resG.table_rows, []);
+  assert.deepEqual(resG.charts.zone_comparison, []);
+  assert.deepEqual(resG.pitch.zones, []);
+  assert.deepEqual(resG.pitch.markers, []);
+  assert.ok(resG.title.includes("No Shot Data"));
   assert.ok(resG.conclusion.includes("Insufficient shot data for Unknown Club"));
 
   // Standalone Worker HTTP route must attach verification warning to result.conclusion

@@ -30,11 +30,12 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Typecheck Worker
+      - name: Typecheck and test Worker
         working-directory: worker
         run: |
           npm install
           npm run typecheck
+          npm test
 
       - name: Build Frontend static export
         working-directory: frontend
