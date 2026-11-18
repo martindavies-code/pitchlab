@@ -45,15 +45,22 @@ export default function PitchLabStudioPage() {
   const [result, setResult] = useState<ModuleResultPayload | null>(null);
   const [verification, setVerification] = useState<VerificationReport | null>(null);
   const [session, setSession] = useState<WorkflowSession | null>(null);
+  const [isWorkflowView, setIsWorkflowView] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
   const [adaptersOpen, setAdaptersOpen] = useState(false);
 
+  const activeWorkflowSession =
+    isWorkflowView && session && session.stage === 5 && session.module_id === activeModule
+      ? session
+      : null;
+
   const loadModule = useCallback(
     async (modId: ModuleId, overrides: Partial<AssumptionsConfig> = {}) => {
       setIsBusy(true);
       setErrorBanner(null);
+      setIsWorkflowView(false);
       try {
         const merged = { ...assumptions, ...overrides, coord_grid: overrides.coord_grid ?? coordGrid };
         const res = await pitchlabApi.runModule(modId, merged);
@@ -78,6 +85,7 @@ export default function PitchLabStudioPage() {
         return pitchlabApi.runModule("managerial_impact_tracker", INITIAL_ASSUMPTIONS);
       })
       .then((res) => {
+        setIsWorkflowView(false);
         setResult(res.result);
         setVerification(res.verification);
         setAssumptions(res.result.assumptions);
@@ -87,10 +95,10 @@ export default function PitchLabStudioPage() {
 
   const handleToggleGrid = async (grid: CoordGrid) => {
     setCoordGrid(grid);
-    if (session && session.stage === 5 && session.module_id === activeModule) {
+    if (activeWorkflowSession) {
       setIsBusy(true);
       try {
-        const updated = await pitchlabApi.overrideAssumptions(session.session_id, { coord_grid: grid });
+        const updated = await pitchlabApi.overrideAssumptions(activeWorkflowSession.session_id, { coord_grid: grid });
         setSession(updated);
         if (updated.result) {
           setResult(updated.result);
@@ -108,6 +116,7 @@ export default function PitchLabStudioPage() {
   const handleStartPrompt = async (prompt: string) => {
     setIsBusy(true);
     setErrorBanner(null);
+    setIsWorkflowView(false);
     try {
       const s1 = await pitchlabApi.startWorkflow(prompt);
       setSession(s1);
@@ -168,6 +177,7 @@ export default function PitchLabStudioPage() {
       const s5 = await pitchlabApi.approveStage4(session.session_id);
       setSession(s5);
       setActiveModule(s5.module_id);
+      setIsWorkflowView(true);
       if (s5.result) {
         setResult(s5.result);
         setVerification(s5.verification);
@@ -185,8 +195,8 @@ export default function PitchLabStudioPage() {
     setErrorBanner(null);
     try {
       if (updated.coord_grid) setCoordGrid(updated.coord_grid);
-      if (session && session.stage === 5 && session.module_id === activeModule) {
-        const rerun = await pitchlabApi.overrideAssumptions(session.session_id, updated);
+      if (activeWorkflowSession) {
+        const rerun = await pitchlabApi.overrideAssumptions(activeWorkflowSession.session_id, updated);
         setSession(rerun);
         if (rerun.result) {
           setResult(rerun.result);
@@ -280,7 +290,7 @@ export default function PitchLabStudioPage() {
           verification={verification}
           coordGrid={coordGrid}
           isBusy={isBusy}
-          questionPrompt={session && session.stage === 5 && session.module_id === activeModule ? session.prompt : undefined}
+          questionPrompt={activeWorkflowSession ? activeWorkflowSession.prompt : undefined}
           onOpenAssumptions={() => setAssumptionsOpen(true)}
         />
       </main>

@@ -135,7 +135,7 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
     const polyB = radar.map((item, i) => pointAt(i, getVal(item, false)).map((v) => v.toFixed(1)).join(",")).join(" ");
 
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 310px) minmax(0, 1fr)", gap: "0.85rem" }}>
+      <div className="radar-split-grid">
         <div className="sub-card" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.45rem" }}>
           <strong style={{ fontSize: "0.84rem" }}>
             {isFit ? `Tactical Fit Score: ${charts.fit_score}%` : "Style Percentile Radar"}
@@ -174,7 +174,7 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
             const basePct = isFit ? 100 : item.season_percentile;
             return (
               <div key={i} style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "0.25rem", fontSize: "0.78rem" }}>
                   <span>{item.metric}</span>
                   <span style={{ color: "#93c5fd", fontWeight: 600 }}>
                     {isFit
@@ -250,7 +250,7 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
         {leaders.slice(0, 8).map((p, idx) => {
           const w = Math.max(4, Math.min(100, (Math.abs(p.delta) / maxDelta) * 100));
           return (
-            <div key={p.player_id} style={{ display: "grid", gridTemplateColumns: "180px 1fr 90px", alignItems: "center", gap: "0.5rem", fontSize: "0.78rem" }}>
+            <div key={p.player_id} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 180px) minmax(44px, 1fr) auto", alignItems: "center", gap: "0.5rem", fontSize: "0.78rem" }}>
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {idx + 1}. <strong>{p.player_name}</strong> ({p.team_name.split(" ")[0]})
               </span>

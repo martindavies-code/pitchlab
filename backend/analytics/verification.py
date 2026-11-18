@@ -173,6 +173,42 @@ def run_automated_verification(
         module_check_passed = len(rows) > 0 and abs(total_pts - total_xpts) <= total_matches * 0.65
         module_expected = f"Simulated xPTS sum within realistic variance of {total_pts:.1f} actual pts"
         module_observed = f"Actual Pts = {total_pts:.1f}, Simulated xPTS = {total_xpts:.1f}"
+    elif module_id == "managerial_impact_tracker":
+        rows = result_payload.get("table_rows", [])
+        m_before = int(rows[0].get("matches", 0)) if len(rows) > 0 else 0
+        m_after = int(rows[1].get("matches", 0)) if len(rows) > 1 else 0
+        module_check_passed = len(rows) >= 2 and m_before > 0 and m_after > 0
+        module_expected = "Non-empty match samples in both pre-split and post-split windows (>= 1 match each)"
+        module_observed = f"{m_before} matches before split, {m_after} matches from split onward"
+    elif module_id == "tactical_intervention_comparison":
+        mw = result_payload.get("charts", {}).get("match_window", {})
+        m_win = int(mw.get("matches", 0))
+        m_season = int(mw.get("season_matches", 0))
+        module_check_passed = m_win > 0 and m_season > 0
+        module_expected = "Non-empty intervention window and season baseline (>= 1 match each)"
+        module_observed = f"{m_win} matches in intervention window, {m_season} in season baseline"
+    elif module_id == "opposition_scouting_one_pager":
+        kpis = result_payload.get("charts", {}).get("style_kpis", {})
+        rows = result_payload.get("table_rows", [])
+        m_opp = int(kpis.get("matches_played", 0))
+        module_check_passed = m_opp > 0 and len(rows) > 0
+        module_expected = ">= 1 match and observed match-state events for scouted opponent"
+        module_observed = f"{m_opp} matches played, {len(rows)} match-state rows"
+    elif module_id == "multi_season_player_progression":
+        total_q = int(result_payload.get("charts", {}).get("total_qualifiers", 0))
+        rows = result_payload.get("table_rows", [])
+        module_check_passed = total_q > 0 and len(rows) > 0
+        module_expected = ">= 1 qualifying player meeting minimum-minutes floor across both seasons"
+        module_observed = f"{total_q} qualifying players"
+    elif module_id == "tactical_fit_recruitment_matcher":
+        charts = result_payload.get("charts", {})
+        player_matched = charts.get("player_matched", True) is not False
+        curr_m = int(charts.get("current_club_matches", 0))
+        targ_m = int(charts.get("target_club_matches", 0))
+        rows = result_payload.get("table_rows", [])
+        module_check_passed = player_matched and curr_m > 0 and targ_m > 0 and len(rows) > 0
+        module_expected = "Resolved player and >= 1 season match for both current and target clubs"
+        module_observed = f"player_matched={player_matched}, current_club_matches={curr_m}, target_club_matches={targ_m}"
 
     checks.append(
         {

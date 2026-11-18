@@ -125,7 +125,9 @@ export function VisualCanvasPane({
                 <h2 style={{ margin: 0, fontSize: "1.1rem" }}>{result.title}</h2>
                 {verification && (
                   <span className={`badge ${verification.all_passed ? "badge-ok" : "badge-warn"}`}>
-                    Verified {verification.checks_passed}/{verification.checks_total}
+                    {verification.all_passed
+                      ? `Verified ${verification.checks_passed}/${verification.checks_total}`
+                      : `Verification Warning ${verification.checks_passed}/${verification.checks_total}`}
                   </span>
                 )}
               </div>
@@ -152,7 +154,9 @@ export function VisualCanvasPane({
           {(result.conclusion || result.summary) && (
             <div className="conclusion-card" role="region" aria-label="Analytical Conclusion">
               <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                <span className="badge badge-ok">Conclusion</span>
+                <span className={`badge ${verification && !verification.all_passed ? "badge-warn" : "badge-ok"}`}>
+                  {verification && !verification.all_passed ? "Conclusion · Verification Warning" : "Conclusion"}
+                </span>
                 {questionPrompt && (
                   <span style={{ fontSize: "0.78rem", color: "var(--text-muted)", fontStyle: "italic" }}>
                     Answering: &ldquo;{questionPrompt}&rdquo;

@@ -7,6 +7,7 @@
     "dev": "wrangler dev --port 8787",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types tests/conclusion.test.mjs",
     "kv:upload:local": "node scripts/upload-kv.mjs --local",
     "kv:upload:remote": "node scripts/upload-kv.mjs --remote"
   },

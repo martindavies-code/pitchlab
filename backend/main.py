@@ -30,6 +30,7 @@ from backend.agent.workflow import (
     override_assumptions_and_rerun,
     start_workflow_session,
 )
+from backend.analytics.conclusion import build_analysis_conclusion
 from backend.analytics.modules import DEFAULT_ASSUMPTIONS, execute_module
 from backend.analytics.verification import run_automated_verification
 from backend.db.connection import db_session
@@ -191,6 +192,7 @@ def api_run_module(module_id: str, req: ModuleRunRequest) -> dict[str, Any]:
         try:
             result = execute_module(conn, module_id, req.overrides)
             verification = run_automated_verification(conn, module_id, result["assumptions"], result)
+            result["conclusion"] = build_analysis_conclusion(result, verification=verification)
             return {
                 "module_id": module_id,
                 "result": result,

@@ -7,6 +7,7 @@ import {
   previewUploadedFile,
 } from "./adapters";
 import { DEFAULT_ASSUMPTIONS, executeModule, runAutomatedVerification } from "./analytics";
+import { buildAnalysisConclusion } from "./conclusion";
 import { getDatasetStore, inspectDatabaseCapabilities } from "./data";
 import type { Env, ModuleId } from "./types";
 import {
@@ -214,6 +215,7 @@ export default {
             result.assumptions as unknown as Record<string, unknown>,
             result
           );
+          result.conclusion = buildAnalysisConclusion(result, null, verification);
           return jsonResponse(request, env, {
             module_id: moduleId,
             result,

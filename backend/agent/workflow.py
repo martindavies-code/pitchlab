@@ -8,7 +8,7 @@ from typing import Any
 
 import duckdb
 
-from backend.analytics.conclusion import build_analysis_conclusion
+from backend.analytics.conclusion import build_analysis_conclusion, extract_club_mentions
 from backend.analytics.modules import DEFAULT_ASSUMPTIONS, execute_module, merge_assumptions
 from backend.analytics.verification import run_automated_verification
 from backend.db.schema import inspect_database_capabilities
@@ -60,39 +60,22 @@ def _extract_entities(prompt: str, capabilities: dict[str, Any]) -> dict[str, An
     elif any(k in low for k in ("where are we shooting", "shot location", "shot zone", "zone efficiency", "conversion", "heatmap")):
         module_id = "shot_location_zone_efficiency"
 
-    # Match teams from live DuckDB catalog
+    # Match teams from live DuckDB catalog (specific names & aliases before ambiguous terms)
     teams = [t["team_name"] for t in capabilities.get("teams", [])]
-    matched_teams: list[str] = []
-    aliases = {
-        "man united": "Manchester United",
-        "man utd": "Manchester United",
-        "united": "Manchester United",
-        "man city": "Manchester City",
-        "city": "Manchester City",
-        "spurs": "Tottenham Hotspur",
-        "tottenham": "Tottenham Hotspur",
-        "villa": "Aston Villa",
-        "newcastle": "Newcastle United",
-        "brighton": "Brighton & Hove Albion",
-        "west ham": "West Ham United",
-        "arsenal": "Arsenal",
-        "liverpool": "Liverpool",
-        "chelsea": "Chelsea",
-    }
-    for alias, canon in aliases.items():
-        if alias in low and canon in teams and canon not in matched_teams:
-            matched_teams.append(canon)
-    for t in teams:
-        if t.lower() in low and t not in matched_teams:
-            matched_teams.append(t)
+    club_mentions = extract_club_mentions(prompt, teams)
+    matched_teams: list[str] = club_mentions["matched_teams"]
+    ambiguous_term: str | None = club_mentions["ambiguous_term"]
+    ambiguous_candidates: list[str] = club_mentions["ambiguous_candidates"]
 
     # Match players from live DuckDB catalog
     matched_player = DEFAULT_ASSUMPTIONS["player_name"]
+    explicit_player = False
     for p in capabilities.get("players", []):
         pname = p["player_name"]
         last = pname.split()[-1].lower()
-        if pname.lower() in low or (len(last) >= 4 and re.search(rf"\b{re.escape(last)}\b", low)):
+        if pname.lower() in low or (len(last) >= 4 and re.search(rf"(?<![a-z0-9]){re.escape(last)}(?![a-z0-9])", low)):
             matched_player = pname
+            explicit_player = True
             break
 
     # Detect composite for progression
@@ -129,11 +112,15 @@ def _extract_entities(prompt: str, capabilities: dict[str, Any]) -> dict[str, An
         if mw_single:
             milestone_mw = max(2, min(38, int(mw_single.group(1))))
 
-    # Detect season
+    # Detect season (check full season strings before bare year digits so "2023/2024" does not match "2024")
     seasons = capabilities.get("seasons", ["2024/2025"])
-    season_name = "2023/2024" if "2023" in low and "2024/2025" not in low else (seasons[0] if seasons else "2024/2025")
-    if "2024/2025" in seasons and "2024" in low:
-        season_name = "2024/2025"
+    default_season = "2024/2025" if "2024/2025" in seasons else (seasons[0] if seasons else "2024/2025")
+    if "2024/2025" in low or "2024/25" in low:
+        season_name = "2024/2025" if "2024/2025" in seasons else default_season
+    elif "2023/2024" in low or "2023/24" in low or "2023" in low:
+        season_name = "2023/2024" if "2023/2024" in seasons else default_season
+    else:
+        season_name = default_season
 
     team_name = matched_teams[0] if matched_teams else DEFAULT_ASSUMPTIONS["team_name"]
     opponent_name = matched_teams[0] if matched_teams else DEFAULT_ASSUMPTIONS["opponent_name"]
@@ -178,8 +165,40 @@ def _extract_entities(prompt: str, capabilities: dict[str, Any]) -> dict[str, An
         ),
         "explicit_min_mins": explicit_min_mins,
         "explicit_team": bool(matched_teams),
+        "explicit_player": explicit_player,
+        "ambiguous_term": ambiguous_term,
+        "ambiguous_candidates": ambiguous_candidates,
         "missing_requirements": missing_requirements,
     }
+
+
+def _apply_scope_updates(
+    session: dict[str, Any],
+    prev_params: dict[str, Any],
+    updates: dict[str, Any] | None,
+    from_stage1: bool = False,
+) -> None:
+    """Track explicit club/player scoping across clarifications and assumption overrides."""
+    club_fields = ("team_name", "opponent_name", "target_club")
+    if from_stage1:
+        cq_fields = {q.get("field") for q in session.get("clarifying_questions", [])}
+        if any(f in cq_fields for f in club_fields) or (updates and any(f in updates for f in club_fields)):
+            session["team_scoped"] = True
+        if "player_name" in cq_fields or (updates and "player_name" in updates):
+            session["player_scoped"] = True
+        return
+
+    if not updates:
+        return
+    is_full_form = "season_name" in updates and "normalisation" in updates and "coord_grid" in updates
+    for cf in club_fields:
+        if cf in updates and updates[cf] is not None:
+            if updates[cf] != prev_params.get(cf) or not is_full_form:
+                session["team_scoped"] = True
+                break
+    if "player_name" in updates and updates["player_name"] is not None:
+        if updates["player_name"] != prev_params.get("player_name") or not is_full_form:
+            session["player_scoped"] = True
 
 
 def start_workflow_session(conn: duckdb.DuckDBPyConnection, prompt: str) -> dict[str, Any]:
@@ -194,8 +213,26 @@ def start_workflow_session(conn: duckdb.DuckDBPyConnection, prompt: str) -> dict
     clarifying_questions: list[dict[str, Any]] = []
     module_id = parsed["module_id"]
     params = parsed["params"]
+    all_teams = [t["team_name"] for t in capabilities["teams"]]
+    club_field = (
+        "opponent_name"
+        if module_id == "opposition_scouting_one_pager"
+        else ("target_club" if module_id == "tactical_fit_recruitment_matcher" else "team_name")
+    )
 
-    if not parsed["explicit_team"] and module_id in (
+    if not parsed["explicit_team"] and parsed.get("ambiguous_term") and parsed.get("ambiguous_candidates"):
+        cands = parsed["ambiguous_candidates"]
+        prioritized = cands + [t for t in all_teams if t not in cands]
+        params[club_field] = cands[0]
+        clarifying_questions.append(
+            {
+                "field": club_field,
+                "question": f"'{parsed['ambiguous_term']}' could refer to multiple clubs ({', '.join(cands)}) — which club should be scoped?",
+                "options": prioritized,
+                "default": cands[0],
+            }
+        )
+    elif not parsed["explicit_team"] and module_id in (
         "managerial_impact_tracker",
         "tactical_intervention_comparison",
         "opposition_scouting_one_pager",
@@ -205,7 +242,7 @@ def start_workflow_session(conn: duckdb.DuckDBPyConnection, prompt: str) -> dict
             {
                 "field": "opponent_name" if module_id == "opposition_scouting_one_pager" else "team_name",
                 "question": "Which club should be scoped for this tactical analysis?",
-                "options": [t["team_name"] for t in capabilities["teams"]],
+                "options": all_teams,
                 "default": params["opponent_name" if module_id == "opposition_scouting_one_pager" else "team_name"],
             }
         )
@@ -246,6 +283,10 @@ def start_workflow_session(conn: duckdb.DuckDBPyConnection, prompt: str) -> dict
         "status": "awaiting_approval",
         "module_id": module_id,
         "params": params,
+        "explicit_team": parsed["explicit_team"],
+        "ambiguous_term": parsed.get("ambiguous_term"),
+        "team_scoped": bool(parsed["explicit_team"]),
+        "player_scoped": bool(parsed.get("explicit_player")),
         "clarifying_questions": clarifying_questions,
         "missing_requirements": parsed["missing_requirements"],
         "feasibility": None,
@@ -271,8 +312,10 @@ def confirm_stage_1_and_check_feasibility(
     if session_id not in WORKFLOW_SESSIONS:
         raise KeyError(f"Workflow session '{session_id}' not found.")
     session = WORKFLOW_SESSIONS[session_id]
+    prev_params = dict(session["params"])
     if clarifications:
         session["params"] = merge_assumptions({**session["params"], **clarifications})
+    _apply_scope_updates(session, prev_params, clarifications, from_stage1=True)
 
     capabilities = inspect_database_capabilities(conn)
     missing = list(session["missing_requirements"])
@@ -454,13 +497,23 @@ def approve_stage_3_execute_and_verify(
     if session_id not in WORKFLOW_SESSIONS:
         raise KeyError(f"Workflow session '{session_id}' not found.")
     session = WORKFLOW_SESSIONS[session_id]
+    prev_params = dict(session["params"])
     if param_edits:
         session["params"] = merge_assumptions({**session["params"], **param_edits})
+        _apply_scope_updates(session, prev_params, param_edits, from_stage1=False)
         session["execution_plan"] = _build_transparent_plan(session)
 
     result = execute_module(conn, session["module_id"], session["params"])
     verification = run_automated_verification(conn, session["module_id"], session["params"], result)
-    conclusion = build_analysis_conclusion(result, prompt=session["prompt"], verification=verification)
+    focus_team = session["params"]["team_name"] if session.get("team_scoped") else None
+    focus_player = session["params"]["player_name"] if session.get("player_scoped") else None
+    conclusion = build_analysis_conclusion(
+        result,
+        prompt=session["prompt"],
+        verification=verification,
+        focus_team=focus_team,
+        focus_player=focus_player,
+    )
     result["conclusion"] = conclusion
 
     session["stage"] = 4
@@ -500,11 +553,21 @@ def override_assumptions_and_rerun(
     if session_id not in WORKFLOW_SESSIONS:
         raise KeyError(f"Workflow session '{session_id}' not found.")
     session = WORKFLOW_SESSIONS[session_id]
+    prev_params = dict(session["params"])
     session["params"] = merge_assumptions({**session["params"], **assumptions_override})
+    _apply_scope_updates(session, prev_params, assumptions_override, from_stage1=False)
     session["execution_plan"] = _build_transparent_plan(session)
     result = execute_module(conn, session["module_id"], session["params"])
     verification = run_automated_verification(conn, session["module_id"], session["params"], result)
-    conclusion = build_analysis_conclusion(result, prompt=session["prompt"], verification=verification)
+    focus_team = session["params"]["team_name"] if session.get("team_scoped") else None
+    focus_player = session["params"]["player_name"] if session.get("player_scoped") else None
+    conclusion = build_analysis_conclusion(
+        result,
+        prompt=session["prompt"],
+        verification=verification,
+        focus_team=focus_team,
+        focus_player=focus_player,
+    )
     result["conclusion"] = conclusion
 
     session["stage"] = 5
