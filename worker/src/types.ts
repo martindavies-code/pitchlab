@@ -207,6 +207,10 @@ export interface WorkflowSession {
   status: "awaiting_approval" | "halted_infeasible" | "verification_warning" | "completed";
   module_id: ModuleId;
   params: AssumptionsConfig;
+  explicit_team?: boolean;
+  ambiguous_term?: string | null;
+  team_scoped?: boolean;
+  player_scoped?: boolean;
   clarifying_questions: Array<{
     field: string;
     question: string;

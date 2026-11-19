@@ -296,9 +296,13 @@ export function AgentChatPane({
       {session && session.stage >= 4 && session.verification && (
         <div className="sub-card" style={{ borderColor: session.verification.all_passed ? "#10b981" : "#f59e0b", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <strong style={{ fontSize: "0.85rem", color: "#34d399" }}>Gate 4: Automated Verification</strong>
+            <strong style={{ fontSize: "0.85rem", color: session.verification.all_passed ? "#34d399" : "#fbbf24" }}>
+              Gate 4: Automated Verification
+            </strong>
             <span className={`badge ${session.verification.all_passed ? "badge-ok" : "badge-warn"}`}>
-              {session.verification.checks_passed}/{session.verification.checks_total} Checks Passed
+              {session.verification.all_passed
+                ? `Verified ${session.verification.checks_passed}/${session.verification.checks_total}`
+                : `Verification Warning ${session.verification.checks_passed}/${session.verification.checks_total}`}
             </span>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
@@ -321,23 +325,30 @@ export function AgentChatPane({
       )}
 
       {/* Stage 5 Completed Card */}
-      {session && session.stage === 5 && session.result && (
-        <div className="sub-card" style={{ borderColor: "#10b981", display: "flex", flexDirection: "column", gap: "0.55rem" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <strong style={{ fontSize: "0.85rem", color: "#34d399" }}>Stage 5: Conclusion & Validated Render</strong>
-            <span className="badge badge-ok">Verified</span>
+      {session && session.stage === 5 && session.result && (() => {
+        const stage5Verified = session.verification ? session.verification.all_passed : true;
+        return (
+          <div className="sub-card" style={{ borderColor: stage5Verified ? "#10b981" : "#f59e0b", display: "flex", flexDirection: "column", gap: "0.55rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
+              <strong style={{ fontSize: "0.85rem", color: stage5Verified ? "#34d399" : "#fbbf24" }}>
+                {stage5Verified ? "Stage 5: Conclusion & Validated Render" : "Stage 5: Conclusion (Verification Warning)"}
+              </strong>
+              <span className={`badge ${stage5Verified ? "badge-ok" : "badge-warn"}`}>
+                {stage5Verified ? "Verified" : "Verification Warning"}
+              </span>
+            </div>
+            <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontStyle: "italic" }}>
+              Question: &ldquo;{session.prompt}&rdquo;
+            </div>
+            <p style={{ margin: 0, fontSize: "0.82rem", lineHeight: 1.55, color: "var(--text-primary)" }}>
+              {session.conclusion || session.result.conclusion || session.result.summary}
+            </p>
+            <button type="button" className="btn" onClick={onOpenAssumptions}>
+              Edit Assumptions & Logic Drawer
+            </button>
           </div>
-          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontStyle: "italic" }}>
-            Question: &ldquo;{session.prompt}&rdquo;
-          </div>
-          <p style={{ margin: 0, fontSize: "0.82rem", lineHeight: 1.55, color: "var(--text-primary)" }}>
-            {session.conclusion || session.result.conclusion || session.result.summary}
-          </p>
-          <button type="button" className="btn" onClick={onOpenAssumptions}>
-            Edit Assumptions & Logic Drawer
-          </button>
-        </div>
-      )}
+        );
+      })()}
     </aside>
   );
 }

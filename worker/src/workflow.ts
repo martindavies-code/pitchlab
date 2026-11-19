@@ -1,5 +1,5 @@
 import { DEFAULT_ASSUMPTIONS, executeModule, mergeAssumptions, runAutomatedVerification } from "./analytics";
-import { buildAnalysisConclusion } from "./conclusion";
+import { buildAnalysisConclusion, extractClubMentions } from "./conclusion";
 import { inspectDatabaseCapabilities } from "./data";
 import type { AssumptionsConfig, DatasetStore, Env, ModuleId, WorkflowSession } from "./types";
 
@@ -68,42 +68,21 @@ function extractEntities(prompt: string, capabilities: ReturnType<typeof inspect
   }
 
   const teams = capabilities.teams.map((t) => t.team_name);
-  const matchedTeams: string[] = [];
-  const aliases: Record<string, string> = {
-    "man united": "Manchester United",
-    "man utd": "Manchester United",
-    united: "Manchester United",
-    "man city": "Manchester City",
-    city: "Manchester City",
-    spurs: "Tottenham Hotspur",
-    tottenham: "Tottenham Hotspur",
-    villa: "Aston Villa",
-    newcastle: "Newcastle United",
-    brighton: "Brighton & Hove Albion",
-    "west ham": "West Ham United",
-    arsenal: "Arsenal",
-    liverpool: "Liverpool",
-    chelsea: "Chelsea",
-  };
-  for (const [alias, canon] of Object.entries(aliases)) {
-    if (low.includes(alias) && teams.includes(canon) && !matchedTeams.includes(canon)) {
-      matchedTeams.push(canon);
-    }
-  }
-  for (const t of teams) {
-    if (low.includes(t.toLowerCase()) && !matchedTeams.includes(t)) {
-      matchedTeams.push(t);
-    }
-  }
+  const clubMentions = extractClubMentions(prompt, teams);
+  const matchedTeams = clubMentions.matched_teams;
+  const ambiguousTerm = clubMentions.ambiguous_term;
+  const ambiguousCandidates = clubMentions.ambiguous_candidates;
 
   let matchedPlayer = DEFAULT_ASSUMPTIONS.player_name;
+  let explicitPlayer = false;
   for (const p of capabilities.players) {
     const pname = p.player_name;
     const parts = pname.split(/\s+/);
     const last = parts[parts.length - 1].toLowerCase();
-    const lastRe = new RegExp(`\\b${escapeRegex(last)}\\b`, "i");
+    const lastRe = new RegExp(`(?<![a-z0-9])${escapeRegex(last)}(?![a-z0-9])`, "i");
     if (low.includes(pname.toLowerCase()) || (last.length >= 4 && lastRe.test(low))) {
       matchedPlayer = pname;
+      explicitPlayer = true;
       break;
     }
   }
@@ -145,14 +124,12 @@ function extractEntities(prompt: string, capabilities: ReturnType<typeof inspect
   }
 
   const seasons = capabilities.seasons.length ? capabilities.seasons : ["2024/2025"];
-  let seasonName =
-    low.includes("2023") && !low.includes("2024/2025")
-      ? "2023/2024"
-      : seasons.length
-        ? seasons[0]
-        : "2024/2025";
-  if (seasons.includes("2024/2025") && low.includes("2024")) {
-    seasonName = "2024/2025";
+  const defaultSeason = seasons.includes("2024/2025") ? "2024/2025" : seasons[0];
+  let seasonName = defaultSeason;
+  if (low.includes("2024/2025") || low.includes("2024/25")) {
+    seasonName = seasons.includes("2024/2025") ? "2024/2025" : defaultSeason;
+  } else if (low.includes("2023/2024") || low.includes("2023/24") || low.includes("2023")) {
+    seasonName = seasons.includes("2023/2024") ? "2023/2024" : defaultSeason;
   }
 
   const teamName = matchedTeams.length ? matchedTeams[0] : DEFAULT_ASSUMPTIONS.team_name;
@@ -198,8 +175,47 @@ function extractEntities(prompt: string, capabilities: ReturnType<typeof inspect
     }),
     explicit_min_mins: explicitMinMins,
     explicit_team: matchedTeams.length > 0,
+    explicit_player: explicitPlayer,
+    ambiguous_term: ambiguousTerm,
+    ambiguous_candidates: ambiguousCandidates,
     missing_requirements: missingRequirements,
   };
+}
+
+function applyScopeUpdates(
+  session: WorkflowSession,
+  prevParams: AssumptionsConfig,
+  updates?: Record<string, unknown> | null,
+  fromStage1 = false
+): void {
+  const clubFields = ["team_name", "opponent_name", "target_club"] as const;
+  if (fromStage1) {
+    const cqFields = new Set(session.clarifying_questions.map((q) => q.field));
+    if (clubFields.some((f) => cqFields.has(f)) || (updates && clubFields.some((f) => f in updates))) {
+      session.team_scoped = true;
+    }
+    if (cqFields.has("player_name") || (updates && "player_name" in updates)) {
+      session.player_scoped = true;
+    }
+    return;
+  }
+
+  if (!updates) return;
+  const isFullForm = "season_name" in updates && "normalisation" in updates && "coord_grid" in updates;
+  for (const cf of clubFields) {
+    const val = updates[cf];
+    if (val !== undefined && val !== null) {
+      if (val !== prevParams[cf] || !isFullForm) {
+        session.team_scoped = true;
+        break;
+      }
+    }
+  }
+  if (updates.player_name !== undefined && updates.player_name !== null) {
+    if (updates.player_name !== prevParams.player_name || !isFullForm) {
+      session.player_scoped = true;
+    }
+  }
 }
 
 function buildTransparentPlan(session: WorkflowSession) {
@@ -334,8 +350,25 @@ export async function startWorkflowSession(
   const clarifyingQuestions: WorkflowSession["clarifying_questions"] = [];
   const moduleId = parsed.module_id;
   const params = parsed.params;
+  const allTeams = capabilities.teams.map((t) => t.team_name);
+  const clubField =
+    moduleId === "opposition_scouting_one_pager"
+      ? "opponent_name"
+      : moduleId === "tactical_fit_recruitment_matcher"
+        ? "target_club"
+        : "team_name";
 
-  if (
+  if (!parsed.explicit_team && parsed.ambiguous_term && parsed.ambiguous_candidates.length > 0) {
+    const cands = parsed.ambiguous_candidates;
+    const prioritized = [...cands, ...allTeams.filter((t) => !cands.includes(t))];
+    params[clubField] = cands[0];
+    clarifyingQuestions.push({
+      field: clubField,
+      question: `'${parsed.ambiguous_term}' could refer to multiple clubs (${cands.join(", ")}) — which club should be scoped?`,
+      options: prioritized,
+      default: cands[0],
+    });
+  } else if (
     !parsed.explicit_team &&
     (moduleId === "managerial_impact_tracker" ||
       moduleId === "tactical_intervention_comparison" ||
@@ -346,7 +379,7 @@ export async function startWorkflowSession(
     clarifyingQuestions.push({
       field,
       question: "Which club should be scoped for this tactical analysis?",
-      options: capabilities.teams.map((t) => t.team_name),
+      options: allTeams,
       default: params[field],
     });
   }
@@ -383,6 +416,10 @@ export async function startWorkflowSession(
     status: "awaiting_approval",
     module_id: moduleId,
     params,
+    explicit_team: parsed.explicit_team,
+    ambiguous_term: parsed.ambiguous_term,
+    team_scoped: parsed.explicit_team,
+    player_scoped: parsed.explicit_player,
     clarifying_questions: clarifyingQuestions,
     missing_requirements: parsed.missing_requirements,
     feasibility: null,
@@ -403,9 +440,11 @@ export async function confirmStage1AndCheckFeasibility(
   clarifications?: Record<string, unknown> | null
 ): Promise<WorkflowSession> {
   const session = await getWorkflowSession(env, sessionId);
+  const prevParams = { ...session.params };
   if (clarifications) {
     session.params = mergeAssumptions({ ...session.params, ...clarifications });
   }
+  applyScopeUpdates(session, prevParams, clarifications, true);
 
   const capabilities = inspectDatabaseCapabilities(store);
   const missing = [...session.missing_requirements];
@@ -473,8 +512,10 @@ export async function approveStage3ExecuteAndVerify(
   paramEdits?: Record<string, unknown> | null
 ): Promise<WorkflowSession> {
   const session = await getWorkflowSession(env, sessionId);
+  const prevParams = { ...session.params };
   if (paramEdits) {
     session.params = mergeAssumptions({ ...session.params, ...paramEdits });
+    applyScopeUpdates(session, prevParams, paramEdits, false);
     session.execution_plan = buildTransparentPlan(session);
   }
 
@@ -485,7 +526,9 @@ export async function approveStage3ExecuteAndVerify(
     session.params as unknown as Record<string, unknown>,
     result
   );
-  const conclusion = buildAnalysisConclusion(result, session.prompt, verification);
+  const focusTeam = session.team_scoped ? session.params.team_name : null;
+  const focusPlayer = session.player_scoped ? session.params.player_name : null;
+  const conclusion = buildAnalysisConclusion(result, session.prompt, verification, focusTeam, focusPlayer);
   result.conclusion = conclusion;
 
   session.stage = 4;
@@ -521,7 +564,9 @@ export async function overrideAssumptionsAndRerun(
   assumptionsOverride: Record<string, unknown>
 ): Promise<WorkflowSession> {
   const session = await getWorkflowSession(env, sessionId);
+  const prevParams = { ...session.params };
   session.params = mergeAssumptions({ ...session.params, ...assumptionsOverride });
+  applyScopeUpdates(session, prevParams, assumptionsOverride, false);
   session.execution_plan = buildTransparentPlan(session);
   const result = executeModule(store, session.module_id, session.params as unknown as Record<string, unknown>);
   const verification = runAutomatedVerification(
@@ -530,7 +575,9 @@ export async function overrideAssumptionsAndRerun(
     session.params as unknown as Record<string, unknown>,
     result
   );
-  const conclusion = buildAnalysisConclusion(result, session.prompt, verification);
+  const focusTeam = session.team_scoped ? session.params.team_name : null;
+  const focusPlayer = session.player_scoped ? session.params.player_name : null;
+  const conclusion = buildAnalysisConclusion(result, session.prompt, verification, focusTeam, focusPlayer);
   result.conclusion = conclusion;
 
   session.stage = 5;

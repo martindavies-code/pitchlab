@@ -14,7 +14,14 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
   if (module_id === "managerial_impact_tracker") {
     const timeline: Array<Record<string, any>> = charts.timeline || [];
     const milestones: Array<Record<string, any>> = charts.milestones || [];
-    if (!timeline.length) return null;
+    if (!timeline.length) {
+      return (
+        <div className="sub-card" role="status" style={{ fontSize: "0.84rem", color: "#cbd5e1" }}>
+          <strong>No Managerial Split Telemetry Available</strong> — 0 matches found for{" "}
+          {result.assumptions.team_name} in {result.assumptions.season_name}. No rolling xGD/PPG chart or comparison metrics were generated.
+        </div>
+      );
+    }
 
     const W = 680;
     const H = 240;
@@ -109,21 +116,43 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
 
   if (module_id === "tactical_intervention_comparison" || module_id === "tactical_fit_recruitment_matcher") {
     const radar: Array<Record<string, any>> = charts.radar || [];
-    if (!radar.length) return null;
-
     const isFit = module_id === "tactical_fit_recruitment_matcher";
+    const mw = (charts.match_window || {}) as Record<string, any>;
+    const startMw = mw.start_mw ?? result.assumptions.start_mw;
+    const endMw = mw.end_mw ?? result.assumptions.end_mw;
+
+    if (!radar.length) {
+      if (isFit) {
+        const playerNotFound = charts.player_matched === false;
+        return (
+          <div className="sub-card" role="status" style={{ fontSize: "0.84rem", color: "#cbd5e1" }}>
+            <strong>
+              {playerNotFound
+                ? `Tactical Fit Unavailable — Requested player "${result.assumptions.player_name}" Not Found`
+                : `Tactical Fit Unavailable — Insufficient Club Telemetry (${result.assumptions.season_name})`}
+            </strong>
+            <div style={{ marginTop: "0.3rem", color: "var(--text-muted)" }}>
+              {playerNotFound
+                ? `No catalog match exists for "${result.assumptions.player_name}" in ${result.assumptions.season_name}. No substitute player, fit score, radar, or adaptation advice was generated.`
+                : `Required club style telemetry was missing for ${result.assumptions.target_club} in ${result.assumptions.season_name}. No fit score or radar comparison was generated.`}
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className="sub-card" role="status" style={{ fontSize: "0.84rem", color: "#cbd5e1" }}>
+          <strong>No Intervention or Season Baseline Telemetry Available</strong> — 0 matches found for{" "}
+          {result.assumptions.team_name} in {result.assumptions.season_name}. No radar or percentile comparison was generated.
+        </div>
+      );
+    }
+
+    const hasInterventionRun = !isFit && radar.some((r) => r.intervention_run !== null && r.intervention_run !== undefined);
     const size = 280;
     const cx = size / 2;
     const cy = size / 2;
     const maxR = 94;
     const n = radar.length;
-
-    const getVal = (item: Record<string, any>, isPrimary: boolean) => {
-      if (isFit) {
-        return isPrimary ? item.overlap_pct : 100;
-      }
-      return isPrimary ? item.run_percentile : item.season_percentile;
-    };
 
     const pointAt = (idx: number, pct: number) => {
       const ang = -Math.PI / 2 + (idx * 2 * Math.PI) / n;
@@ -131,14 +160,31 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
       return [cx + r * Math.cos(ang), cy + r * Math.sin(ang)];
     };
 
-    const polyA = radar.map((item, i) => pointAt(i, getVal(item, true)).map((v) => v.toFixed(1)).join(",")).join(" ");
-    const polyB = radar.map((item, i) => pointAt(i, getVal(item, false)).map((v) => v.toFixed(1)).join(",")).join(" ");
+    const polyB = radar
+      .map((item, i) => pointAt(i, isFit ? 100 : Number(item.season_percentile ?? 0)).map((v) => v.toFixed(1)).join(","))
+      .join(" ");
+    const polyA =
+      isFit || hasInterventionRun
+        ? radar
+            .map((item, i) =>
+              pointAt(i, Number(isFit ? item.overlap_pct ?? 0 : item.run_percentile ?? 0))
+                .map((v) => v.toFixed(1))
+                .join(",")
+            )
+            .join(" ")
+        : null;
 
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 310px) minmax(0, 1fr)", gap: "0.85rem" }}>
+      <div className="radar-split-grid">
         <div className="sub-card" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.45rem" }}>
-          <strong style={{ fontSize: "0.84rem" }}>
-            {isFit ? `Tactical Fit Score: ${charts.fit_score}%` : "Style Percentile Radar"}
+          <strong style={{ fontSize: "0.84rem", textAlign: "center" }}>
+            {isFit
+              ? charts.fit_score !== null && charts.fit_score !== undefined
+                ? `Tactical Fit Score: ${charts.fit_score}%`
+                : "Tactical Fit Unavailable"
+              : hasInterventionRun
+                ? "Style Percentile Radar"
+                : "Season Baseline Profile Only (Intervention Window Unavailable)"}
           </strong>
           <svg viewBox={`0 0 ${size} ${size}`} style={{ width: "100%", maxWidth: 260 }}>
             {[25, 50, 75, 100].map((ring) => (
@@ -157,29 +203,56 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
               );
             })}
             <polygon points={polyB} fill="rgba(148, 163, 184, 0.16)" stroke="#94a3b8" strokeWidth="1.6" />
-            <polygon points={polyA} fill="rgba(56, 189, 248, 0.28)" stroke="#38bdf8" strokeWidth="2.2" />
+            {polyA && <polygon points={polyA} fill="rgba(56, 189, 248, 0.28)" stroke="#38bdf8" strokeWidth="2.2" />}
           </svg>
-          <div style={{ display: "flex", gap: "0.75rem", fontSize: "0.73rem" }}>
-            <span style={{ color: "#38bdf8" }}>● {isFit ? "Alignment Overlap %" : "Intervention Run"}</span>
-            <span style={{ color: "#94a3b8" }}>● {isFit ? "100% Target Profile" : "Season Baseline"}</span>
+          <div style={{ display: "flex", gap: "0.75rem", fontSize: "0.73rem", flexWrap: "wrap", justifyContent: "center" }}>
+            {isFit ? (
+              <>
+                <span style={{ color: "#38bdf8" }}>● Alignment Overlap %</span>
+                <span style={{ color: "#94a3b8" }}>● 100% Target Profile</span>
+              </>
+            ) : hasInterventionRun ? (
+              <>
+                <span style={{ color: "#38bdf8" }}>● Intervention Run (MW {startMw}–{endMw})</span>
+                <span style={{ color: "#94a3b8" }}>● Season Baseline</span>
+              </>
+            ) : (
+              <>
+                <span style={{ color: "#94a3b8" }}>● Season Baseline ({mw.season_matches ?? "?"} matches)</span>
+                <span style={{ color: "#fbbf24" }}>○ MW {startMw}–{endMw}: 0 matches (unavailable)</span>
+              </>
+            )}
           </div>
         </div>
 
         <div className="sub-card" style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}>
           <strong style={{ fontSize: "0.84rem" }}>
-            {isFit ? "Stylistic Overlap & Adaptation Risks" : "Percentile Comparison Bars (0–100)"}
+            {isFit
+              ? "Stylistic Overlap & Adaptation Risks"
+              : hasInterventionRun
+                ? "Percentile Comparison Bars (0–100)"
+                : `Season Baseline Percentiles (MW ${startMw}–${endMw}: 0 Matches — No Comparison)`}
           </strong>
           {radar.map((item, i) => {
-            const valPct = isFit ? item.overlap_pct : item.run_percentile;
-            const basePct = isFit ? 100 : item.season_percentile;
+            const basePct = Number(isFit ? 100 : item.season_percentile ?? 0);
+            const valPct = isFit ? Number(item.overlap_pct ?? 0) : hasInterventionRun ? Number(item.run_percentile ?? 0) : basePct;
+            const barColor = !isFit && !hasInterventionRun
+              ? "#64748b"
+              : valPct >= 75
+                ? "#10b981"
+                : valPct >= 50
+                  ? "#38bdf8"
+                  : "#f59e0b";
             return (
               <div key={i} style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "0.25rem", fontSize: "0.78rem" }}>
                   <span>{item.metric}</span>
-                  <span style={{ color: "#93c5fd", fontWeight: 600 }}>
+                  <span style={{ color: !isFit && !hasInterventionRun ? "#cbd5e1" : "#93c5fd", fontWeight: 600 }}>
                     {isFit
                       ? `${item.current_club_val} → ${item.target_club_val} (${valPct}% fit)`
-                      : `${item.intervention_run} vs ${item.season_avg} (P${valPct} vs P${basePct})`}
+                      : hasInterventionRun
+                        ? `${item.intervention_run} vs ${item.season_avg} (P${valPct} vs P${basePct})`
+                        : `${item.season_avg} (Season P${basePct} · MW ${startMw}–${endMw}: N/A)`}
                   </span>
                 </div>
                 <div style={{ height: 8, background: "#0b111d", borderRadius: 99, overflow: "hidden", position: "relative" }}>
@@ -187,14 +260,14 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
                     style={{
                       width: `${Math.max(4, Math.min(100, valPct))}%`,
                       height: "100%",
-                      background: valPct >= 75 ? "#10b981" : valPct >= 50 ? "#38bdf8" : "#f59e0b",
+                      background: barColor,
                     }}
                   />
                 </div>
               </div>
             );
           })}
-          {isFit && Array.isArray(charts.adaptation_risks) && (
+          {isFit && Array.isArray(charts.adaptation_risks) && charts.adaptation_risks.length > 0 && (
             <div style={{ marginTop: "0.35rem", fontSize: "0.78rem", color: "#fbbf24" }}>
               <strong>Adaptation Notes:</strong> {charts.adaptation_risks.join(" ")}
             </div>
@@ -208,6 +281,14 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
     const kpis = charts.style_kpis || {};
     const threats: Array<Record<string, any>> = charts.danger_players || [];
     const formations: Array<Record<string, any>> = charts.formations || [];
+    if (Number(kpis.matches_played ?? 0) <= 0) {
+      return (
+        <div className="sub-card" role="status" style={{ fontSize: "0.84rem", color: "#cbd5e1" }}>
+          <strong>No Opposition Telemetry Available</strong> — 0 matches found for{" "}
+          {result.assumptions.opponent_name} in {result.assumptions.season_name}.
+        </div>
+      );
+    }
     return (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.75rem" }}>
         <div className="sub-card">
@@ -240,7 +321,14 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
 
   if (module_id === "multi_season_player_progression") {
     const leaders: Array<Record<string, any>> = charts.leaderboard || [];
-    if (!leaders.length) return null;
+    if (!leaders.length) {
+      return (
+        <div className="sub-card" role="status" style={{ fontSize: "0.84rem", color: "#cbd5e1" }}>
+          <strong>No Multi-Season Progression Telemetry Available</strong> — 0 qualifying players met the minimum-minutes filter across{" "}
+          {result.assumptions.season_1} → {result.assumptions.season_2}.
+        </div>
+      );
+    }
     const maxDelta = Math.max(0.5, ...leaders.map((l) => Math.abs(Number(l.delta || 0))));
     return (
       <div className="sub-card" style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
@@ -250,7 +338,7 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
         {leaders.slice(0, 8).map((p, idx) => {
           const w = Math.max(4, Math.min(100, (Math.abs(p.delta) / maxDelta) * 100));
           return (
-            <div key={p.player_id} style={{ display: "grid", gridTemplateColumns: "180px 1fr 90px", alignItems: "center", gap: "0.5rem", fontSize: "0.78rem" }}>
+            <div key={p.player_id} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 180px) minmax(44px, 1fr) auto", alignItems: "center", gap: "0.5rem", fontSize: "0.78rem" }}>
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {idx + 1}. <strong>{p.player_name}</strong> ({p.team_name.split(" ")[0]})
               </span>
@@ -269,7 +357,13 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
 
   if (module_id === "league_table_vs_underlying_play") {
     const scatter: Array<Record<string, any>> = charts.scatter || [];
-    if (!scatter.length) return null;
+    if (!scatter.length) {
+      return (
+        <div className="sub-card" role="status" style={{ fontSize: "0.84rem", color: "#cbd5e1" }}>
+          <strong>No League Table vs xPTS Telemetry Available</strong> — 0 matches found in {result.assumptions.season_name}.
+        </div>
+      );
+    }
     const W = 680;
     const H = 290;
     const padL = 48;
@@ -330,7 +424,14 @@ export function ModuleCharts({ result }: ModuleChartsProps) {
 
   // Shot Location & Zone Efficiency grouped bar summary
   const zones: Array<Record<string, any>> = charts.zone_comparison || [];
-  if (!zones.length) return null;
+  if (!zones.length) {
+    return (
+      <div className="sub-card" role="status" style={{ fontSize: "0.84rem", color: "#cbd5e1" }}>
+        <strong>No Shot Zone Telemetry Available</strong> — 0 open-play or non-empty shots found for{" "}
+        {result.assumptions.team_name} in {result.assumptions.season_name}.
+      </div>
+    );
+  }
   return (
     <div className="sub-card" style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
       <strong style={{ fontSize: "0.85rem" }}>Zone Shot Share & xG/Shot vs League Average</strong>
